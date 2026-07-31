@@ -1,0 +1,11 @@
+# CODEOWNERS
+#
+# Uchinoko for Palworld is developed and maintained solely by a single
+# individual developer. This matches what CODE_SIGNING_POLICY.md already
+# discloses under "Approvers / Committers" — this file makes the same fact
+# machine-readable for GitHub's review-request automation.
+#
+# If this project ever grows beyond a single maintainer, update this file and
+# CODE_SIGNING_POLICY.md together.
+
+* @pandrabox

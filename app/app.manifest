@@ -1,0 +1,17 @@
+<?xml version="1.0" encoding="UTF-8" standalone="yes"?>
+<!--
+  dev#523: Uchinoko.exe(本体GUI)のアプリケーションマニフェスト。
+  requestedExecutionLevel=asInvoker を明示するだけの最小マニフェスト
+  (外形改善が目的。DPI/OS互換シム等、挙動に影響しうる追加要素は入れない)。
+  csc.exe /win32manifest: 経由で app\build_app.ps1 がビルド時に埋め込む。
+-->
+<assembly xmlns="urn:schemas-microsoft-com:asm.v1" manifestVersion="1.0">
+  <assemblyIdentity version="1.0.0.0" name="Uchinoko.for.Palworld"/>
+  <trustInfo xmlns="urn:schemas-microsoft-com:asm.v2">
+    <security>
+      <requestedPrivileges xmlns="urn:schemas-microsoft-com:asm.v3">
+        <requestedExecutionLevel level="asInvoker" uiAccess="false"/>
+      </requestedPrivileges>
+    </security>
+  </trustInfo>
+</assembly>

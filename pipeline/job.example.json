@@ -1,0 +1,13 @@
+{
+  "vrm_path": "C:\\path\\to\\your_avatar.vrm",
+  "avatar_name": "YourAvatar",
+  "shoulder_offset_deg": 0.0,
+  "merge_fingers": false,
+  "unlit": false,
+  "genders": ["Male", "Female"],
+  "paths": {
+    "blender_exe": "C:\\path\\to\\DiveToPalworld\\tools\\blender-4.3.2-windows-x64\\blender.exe",
+    "vrm_addon_zip": "C:\\path\\to\\DiveToPalworld\\third_party\\VRM_Addon_for_Blender-Extension-4_4_0.zip",
+    "palworld_pak": "C:\\Program Files (x86)\\Steam\\steamapps\\common\\Palworld\\Pal\\Content\\Paks\\Pal-Windows.pak"
+  }
+}

@@ -1,0 +1,13 @@
+{
+  "schema": 1,
+  "note": "dev#87/#89/#91: bundled fallback list for suppressing false-positive Palworld version-mismatch warnings. 'known_versions' is the fast fingerprint path (Steam buildid + Pal-Windows.pak size, no pak content read, checked at every GUI startup). 'known_vanilla_manifest_sha256' is the dev#91 self-judgment path: the combined_hash from extract_vanilla.py's vanilla_manifest.json (sha256 over the small extracted output set, not the 37.7GB pak) — a future unknown Palworld build is treated as compatible if its extracted materials hash-match one of these, even though its build id/pak size do not appear in known_versions. dl.osakishokai.com/versions.json (dev#89) may extend both arrays via an optional top-level 'palworld_known_good' object with the same two keys; on fetch failure or offline, the client falls back to this bundled file only.",
+  "known_versions": [
+    {"build_id": "24181527", "pak_size": 40526106335, "label": "1.0.1"},
+    {"build_id": "24370881", "pak_size": 40525057755, "label": "1.0.2.100933"},
+    {"build_id": "24467282", "pak_size": 40525057755, "label": "1.0.2.101103"}
+  ],
+  "known_vanilla_manifest_sha256": [
+    "78a62c16c0dda028e9a3d013de9306077dea3ddbba035ed2355be62be972ffe5",
+    "72d6de9ccbfbdf9f73265c0e194fb619f1951858bf5428218737bba266cedac7"
+  ]
+}

@@ -1,0 +1,43 @@
+name: 不具合報告 / Bug report
+description: ツールの動作がおかしい、エラーが出る、変換結果が壊れている等の報告
+title: "[Bug] "
+labels: ["bug"]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        ご報告ありがとうございます。
+        **最も有用な情報は診断ログです。** アプリ内の「問合せ」ボタンから、
+        診断ログの内容を確認・編集したうえで直接送信することもできます
+        (その場合はこのIssueへログを貼る必要はありません)。
+        あなたのアバターファイルの送付は不要です(多くの場合、購入した
+        有料アセットのため再配布できません)。
+
+        Thank you for the report. **The diagnostic log is the most useful
+        information.** You can also send it directly (reviewing/editing it
+        first) via the in-app "Contact" button — in that case you don't need
+        to paste the log here. You do not need to send your avatar file
+        (most avatars are paid assets that cannot be redistributed).
+  - type: textarea
+    id: what-happened
+    attributes:
+      label: 何が起きましたか / What happened?
+      description: 期待した動作と、実際に起きたことを書いてください。
+      placeholder: 変換ボタンを押したらエラーダイアログが表示された 等
+    validations:
+      required: true
+  - type: textarea
+    id: log
+    attributes:
+      label: 診断ログ(あれば)/ Diagnostic log (if available)
+      description: アプリ内の「ログをコピー」機能で取得したログを貼ってください。
+      render: text
+    validations:
+      required: false
+  - type: input
+    id: version
+    attributes:
+      label: バージョン / Version
+      placeholder: v2.2.11
+    validations:
+      required: false

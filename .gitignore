@@ -1,0 +1,169 @@
+# =====================================================================
+# 2026-07-26 棚卸し改訂案(work\gitignore_review\PROPOSAL.md 参照)
+# 前提: deploy(devtools\deploy.py)がホワイトリストで公開集合を独立に決めるため、
+# この .gitignore は「衛生」(巨大・再生成可能・第三者著作物を追跡しない)だけを見ればよい。
+# Dev を private リポジトリ化する前提で、旧来「公開したくない」という理由だけで
+# 効いていたブロック ignore(.devonly/ .claude/ devtools/ CLAUDE.md)は外した。
+# =====================================================================
+
+# --- 聖域: 絶対に外さない ---
+# シークレット置き場(管理トークン等の値はここにのみ置く。2026-07-28 WP報告基盤)
+.secrets/
+# wranglerのローカル状態(wrangler-account.json に個人メールアドレスを含む。
+# 2026-07-29 wp_report検証官の指摘。パターンにスラッシュが無いため全階層で有効)
+.wrangler/
+# wrangler dev --local 用のローカルシークレット(ADMIN_TOKEN/ADMIN_KEY等のテスト値)。
+# 2026-07-29 wp_inqflow。パターンにスラッシュが無いため全階層で有効
+.dev.vars
+# ユーザー作業物(アバター素材・生成MODは公開しない。第三者ライブラリの
+# 一時展開物が置かれることもある。例: work\u51_disttest\ 配下のBlender展開物)。
+# 151GB/18万ファイル実測(2026-07-26)。外すと git add -A が破滅する。
+work/
+# Blenderポータブル(約1GB、公式サイトから再取得できる。再生成可能)
+tools/
+
+# --- 生成物・キャッシュ(再生成可能) ---
+*.pyc
+__pycache__/
+# 作業中バックアップの取り違え防止(*.bak_YYYYMMDD 等。11件・約60KB実測、
+# .devonly/research 配下にも複数あり、パターンにスラッシュが無いため全階層で有効)
+*.bak_*
+*.bak2_*
+# アバターごとの変換用UEプロジェクト(自動生成・巨大。ルート直下のみ)。
+# dev#114(2026-07-29)でUEパイプライン自体を削除したため新規には生成されないが、
+# 旧バージョンから引き継いだ環境の残骸を誤って追跡しないための保険として維持する
+/ue_project/
+# ビルド成果物(実行ファイル・配布zip。2026-07-26実測 dist/ だけで2.1GB)
+# v2.0.0改名でexe名は Uchinoko.exe。DiveToPalworld時代の残骸パターンは掃除済み(2026-07-29)
+Uchinoko.exe
+Uchinoko.old*.exe
+vrm2palworld.exe
+vrm2palworld.old*.exe
+dist/
+# スモークテストの結果(生成物)
+test/smoke_report/
+# Claude Codeの個人ローカル設定(権限モード等、実行環境ごとの状態。2026-07-30)
+.claude/settings.local.json
+# ローカル設定(settings_paksdir.txt 等、GUIがローカル環境のパスを書き込む。
+# 単一の正本ではなく実行環境ごとの状態なので追跡しない)
+settings_*.txt
+
+# --- 内部調査・自動化ログ(巨大・再生成可能。プライバシーではなく容量の理由) ---
+# パターンにスラッシュが無いため全階層で有効(.devonly/research/ 等も含む)。
+# .devonly/research/ は2026-07-26実測で4.7GB・100MB超ファイル20本以上を含み、
+# しかもPalworld本体からpak抽出したゲーム資産(*.uasset等)や、履歴込みで
+# 100MB超の外部clone(UAssetAPI、入れ子git)まで含む。GitHubの単体100MB上限に
+# 抵触する上、第三者著作物の複製にもあたるため、privateでも絶対に追跡しない。
+research/
+# 例外: /researchスキル(2026-07-29制定)は名前が偶然衝突しただけの追跡対象。
+# 上のresearch/ガード(.devonly/research/等の巨大・第三者著作物)はそのまま維持。
+!.claude/skills/research/
+!.claude/skills/research/**
+# AIオートパイロットの実行結果・ログ(ルート直下。現状は存在しないが将来のガード
+# として維持。.trush/autopilot/ も本パターンで副次的にカバーされるが、.trush/ 自体
+# 既にまるごと ignore 対象なので実害なし)
+autopilot/
+autopilot/_probe/
+autopilot/logs/
+# 廃止予定・非アクティブなファイル一時保管(2026-07-26実測: .trush/ue_project/ に
+# 第三者UEランタイム実行ファイル(UnrealGame-Win64-Shipping.exe、100MB超)を含む3GB。
+# 「廃止予定」という性質上バージョン管理する価値がなく、大容量・第三者著作物の
+# 両方の理由から private でも追跡しない)
+.trush/
+
+# --- .devonly: 開発メモ・裁定経緯(文書は追跡、巨大な生成物は追跡しない) ---
+# 旧方針は「.devonly を Pub に置きたくないので丸ごと ignore」だったが、
+# deploy が独立ホワイトリストで公開集合を決めるようになったため、Dev(private)側は
+# 衛生観点だけで判断する。.devonly/docs, .devonly/publish, .devonly/handover_* 等の
+# 文書(2026-07-26実測 .devonly 全体4.8GBのうちresearch以外は約340MB、うち大半は
+# 後述の tmb で1MB未満のテキスト中心)は内部issue管理の資産として追跡する。
+# 巨大・非文書のサブディレクトリだけ個別に除外する:
+#   .devonly/research/  … 上の research/ ルールで既にカバー済み(重複記載しない)
+.devonly/tmb/
+# ↑ サムネイル素材(png/xcf、2026-07-26実測21MB)。文書ではなく作業用デザイン
+#   素材でありissue管理に不要と判断したが、追跡してもよい程度のサイズではある。
+#   判断を仰ぎたい(PROPOSAL.md参照)。
+.devonly/sandboxlog/
+# ↑ 単発ログダンプ(2026-07-26実測61KB、1ファイル)。ログは再生成可能かつ
+#   日付名で使い捨てのため追跡しない。
+
+# --- .claude: Claude Code設定・スキル定義(private前提で追跡する) ---
+# 旧方針は「公開しない」判定でまるごと ignore だったが、privateなら露出の懸念は無い。
+# ただし worktrees/ は git worktree の実体(.git/worktrees/ に絶対パスで登録される
+# 作業ツリー)であり、コミット対象にすると壊れる。ここだけは除外必須。
+.claude/worktrees/
+
+# --- devtools: 開発者用ツール群(private前提で追跡する) ---
+# 旧方針は「公開しない」判定でまるごと ignore だったが、devtools/ は
+# devtools\deploy.py の EXCLUDE_TOP で既にPubの公開集合から独立に除外されており、
+# Dev側でgit追跡してもPubへは一切出ない。実際に90ファイルが.gitignore追加前から
+# 既にgit管理下にあった(2026-07-26 git ls-files で確認)。ソースコードなので
+# 素直に追跡する(生成物の __pycache__/ *.bak_* は上の汎用ルールで既に除外)。
+
+# --- サイト・マニュアル用素材 ---
+docs/site_assets/
+# ↑ 現状ルート直下に docs/ が存在しない(.devonly/docs/ への移動済みで死んだルール、
+#   2026-07-26確認)。将来 docs/ が復活した場合のガードとして残置。削除してもよい
+#   (判断を仰ぎたい、PROPOSAL.md参照)。
+# manual/img/ は2026-07-26実測で9ファイル1.7MBのみ(「サイズが大きい」という
+# 旧コメントの前提が事実と食い違っていた)。マニュアル画像の唯一の正本であり、
+# deploy の WHITELIST_DIRS に manual が含まれ既にPubへ丸ごとコピーされている
+# (2026-07-26 C:\P\Work\UchinokoPub\manual\img で実物確認済み)ため、
+# Dev側でignoreする実益が無い。追跡するに変更する。
+# manual/img/ … (この行は意図的に削除。追跡対象にするため)
+
+# --- CLAUDE.md: エージェント向け開発メモ ---
+# 旧方針は「公開しない」判定で ignore(内部裁定経緯・ローカルパス・FBXの扱い等が
+# 入るため)。private前提なら露出懸念は無く、8KBの小さい文書。追跡する。
+# CLAUDE.md … (この行は意図的に削除。追跡対象にするため)
+
+# --- noue_master (2026-07-26裁定で追跡することに変更済み、変更なし) ---
+# noue_master\(スタブ・マテリアル・マウントアンカー等の同梱資産、348ファイル/21MB)は
+# 2026-07-26 の裁定で「追跡する」に変更した。詳細は third_party/SOURCES.md 等参照。
+
+# --- 検体アバター(他人の著作物。privateでも複製にあたるため聖域) ---
+test/vrm/*.vrm
+test/vrm/collected/
+test/vrm/
+test/avatar/
+test/collected/
+*.vrm
+*.fbx
+*.prefab
+*.unitypackage
+!test/cc0avatar/**
+
+# --- 素材の原本(ローカル専用。派生物だけを出荷・公開する) ---
+# .devonly/asset_master/ は「劣化のない原本」の置き場。
+# 例: manual/img/ の元PNG 9枚(1.74MB)。配布・公開されるのは lossy WebP q80(526KB)であり、
+# 原本は作り直しの起点としてローカルにだけ残す(派生物から再変換すると二重に劣化するため)。
+# .devonly/ 全体を追跡対象へ変更したため、ここだけは明示的に除外する必要がある。
+# 詳細は .devonly/asset_master/README.md
+.devonly/asset_master/
+# 問い合わせウォッチャーの新着イベント置き場(実行時生成。原本はサーバーD1/R2、再取得可能。dev#50)
+.devonly/support/inbox/
+# WSB証跡(実行時生成の判定材料。dev#74。追跡するとクリーンツリー検査を自汚染するためignore)
+devtools/wsb_record.json
+# ぱんの個人ショートカット置き場(マシンローカル、settings_*と同類の衛生ignore)
+.devonly/lnk/
+.devonly/HumanTest/
+# ディスク空き容量監視ログ(dev#190、devtools\disk_guard.py)。release.py/relgate.py
+# 実行のたびに1行追記される実行時生成物で、追跡するとwsb_record.json(上記)と
+# 同じ理由でクリーンツリー検査を自汚染するためignore。
+# dev#186(work\に恒常データを置かない裁定)以降、承認台帳(machine_pak_records.jsonl)・
+# gh_inbox既読DB・support_watch状態・release証明書・BOOTHミラー対応表など、
+# 「消えると困る実行時状態」全般の恒久置き場としてもここを使う(work\は使い捨て専用)。
+.devonly/state/
+# 一次入力フィクスチャ(Unity輸出結果のFBX/humanoid.json等。dev#186)。手動/外部
+# プロジェクト依存で再生成コストが高いため.devonly側に永続化するが、原本(FBX)自体は
+# 上のtest/vrm規則(*.fbx等)と同じ「他人の著作物の複製を避ける」聖域の対象でもある。
+.devonly/fixtures/
+# watchdog(dev#328 WP-AUTOWATCHDOG)の実行時生成物。停止フラグ・発進履歴・ログ・
+# 異常マーカーはいずれも実行のたびに変わるローカル状態であり、追跡するとクリーン
+# ツリー検査を自汚染するためignore。watchdog_config.json(発進コマンド設定)は
+# 追跡対象のまま(コマンド確定は別WPがこのファイルを編集する)。
+devtools/autonomy/STOP
+devtools/autonomy/watchdog_state.json
+devtools/autonomy/watchdog.log
+devtools/autonomy/watchdog.log.old
+devtools/autonomy/ANOMALY_LAUNCH_LIMIT.flag

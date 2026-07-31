@@ -1,0 +1,597 @@
+# Uchinoko for Palworld — 公開リポジトリ(pandrabox/Uchinoko)用 CIビルドワークフロー
+#
+# push(既定ブランチ)・pull_request・リリースタグ(v*)push・手動実行のいずれでも、
+# クリーンなチェックアウトから Uchinoko.exe とフル配布パッケージのビルドが常に
+# 成立することを検証する。
+#
+# 以下、一部の非自明なステップについて背景を補足する:
+# - ビルドは ooz.pyd と python3.dll という2つのファイルに依存する。開発者のローカル
+#   Python環境には通常既に存在するが、クリーンなCIランナーには無いため、ビルド本体を
+#   実行する前に明示的な取得ステップで用意している。「追加ファイル無しでもクリーンな
+#   cloneからビルドが成功する」という当初の想定は、検証環境にたまたま過去の作業由来の
+#   ooz.pyd が残っていたことによる誤りだったと判明した。真にクリーンな環境
+#   (%APPDATA%/%LOCALAPPDATA%を空にした状態)では、この取得ステップを外すと
+#   build\make_dist.ps1 が「ooz.pydが見つからない」でEXIT=1になることを実機で
+#   確認した上でこの手順を組んでいる。
+# - .NET Framework 4.8 の csc.exe(C#アプリのビルドに使用)は windows-latest
+#   ランナーイメージに標準搭載されているため、追加のSDKインストールは不要。
+#   将来イメージが変わった場合に備え、存在確認のみのfail-fastステップを置いている。
+#
+# SignPathでの署名連携は、ファイル末尾にコメントアウトされた雛形として用意してある。
+# 有効化手順は同ブロックのコメントを参照。
+#
+# --- release ジョブ(WP34/2026-07-31 追加。「CIはビルドはするがGitHub Releaseは
+#     作らず、releaseは人間が手元でビルドしたzipを都度手動アップロードする」という
+#     経路がCIと独立していた欠落の是正)---------------------------------------------
+# タグ push(v*)のときだけ、build ジョブが作った未署名成果物を GitHub Release の資産として
+# 添付する。SignPath の Origin Verification が要求する「署名対象がCIから出ていること」を
+# 満たすための最短経路(build→release)。
+#
+# 設計判断: 作成する Release は既定で **draft(下書き)** にする。理由:
+#   1. 現行公開中バージョンは過去に配布停止事故(誤検知)を起こした実績があり、
+#      新レイアウトのビルドも一部のアンチウイルスエンジンで断続的に検出される
+#      ことが開発側の検証で確認されている(開発側の記録に詳細を保管)。
+#      「タグを打った瞬間に無条件で一般公開される」経路は、この既知リスクと相性が悪い。
+#   2. draftでも「CIがソースからビルドした成果物をReleaseへ添付した」という事実
+#      (Origin Verificationが求める提出物)は成立する。人間が中身を確認してから
+#      「Publish release」ボタンを押す一段のゲートを残せる。
+#   3. 既存の公開判断(v2.3.0系は検出リスクゆえ見送り中)を、このワークフローが
+#      勝手に覆さないようにするための安全側デフォルト。
+# 無条件で即公開したい場合は `gh release create` の `--draft` を外すだけでよい
+# (オーナー判断、このワークフロー単体では変更しない)。
+#
+# バージョン整合性: タグ名と app\DiveToPalworld.cs の ToolVersion 定数が食い違った場合に
+# 失敗させる、という要件は **build ジョブの `build\make_dist.ps1` が既に実装している**
+# (`make_dist.ps1:59-64` が `-Version` 引数とソースの ToolVersion を突き合わせ、不一致なら
+# EXIT=1)。release ジョブはこれに加えて、タグ名とbuildジョブが解決した version 出力が
+# 一致することも defense-in-depth で再確認する(下記 release ジョブ参照)。
+#
+# --- pytest ステップ(2026-07-31追加。「検査を作ったが配線していない」の是正)-------
+# それまで、このワークフローは成果物をビルドするだけで、公開リポジトリに同期されている
+# pytestテストを一度も実行していなかった。そのため、配布zipの同梱文書に禁止内容
+# (Windows Defender除外案内の手順・「もう検出されない」という虚偽の断定・スコープ外
+# トピックの禁止語)が無いことを検査する回帰テスト tests\shipcheck\test_dist_shipped_docs_content.py
+# が公開CIで一度も走らず、後日文書が元に戻っても誰も気づけない状態だった。
+#
+# 実行範囲(実機検証済み、詳細は同期元リポジトリの
+# .devonly\docs\signpath\verify\WP35_ci_test_wiring.md):
+# 公開ツリー(devtoolsを含まない)単独で `pytest tests --collect-only` を行うと、
+# devtools\配下のモジュールをsys.path経由でハードimportする多数のテストファイルが
+# collectionエラーになる(実測11ファイル。911件は収集自体は成功するが、VRMサンプル等の
+# 検体アセットはPub側に同期されないため、公開ツリー単独での全件実行時PASSは未検証)。
+# そのため本ステップでは、SignPath審査対策として新設された最優先の
+# test_dist_shipped_docs_content.py 単体を対象にする。このファイルはdevtoolsへの依存を
+# try/except ImportError で自己完結させてあり(devtools\sensitive_denylist が無い環境
+# ではowner_handle_leakチェックだけが自動的に無効化され、他の判定は継続する設計)、
+# 公開ツリー単独でも収集・実行の両方が可能なことを確認済み。このステップの前段
+# (csc.exe確認・ooz.pyd取得・python3.dll取得)により build\make_dist.ps1 の前提は
+# 揃っているため、実際に配布zipをビルドしてその実物を検査する統合テスト
+# (test_real_dist_zip_docs_have_no_forbidden_content 等)もスキップされず実行される。
+# 収集0件・import失敗・アサーション失敗のいずれであってもpytestは非ゼロで終了する
+# ため、追加の「収集件数チェック」は設けていない(偽の緑にならないことを実機確認済み)。
+# pytestはテスト実行時にのみ使う開発ツールであり、署名対象の成果物には含まれないため、
+# pyooz/python3.dll(FIX12)と異なりSHA256までは固定せず、バージョンのみ固定する。
+
+name: build
+
+# トリガ方針:
+# 従来は workflow_dispatch とタグ push(v*)のみで、通常のコミットではCIが動かず
+# 「継続的に健全である」ことが外から見えなかった(公開repoは2026-07-29作成で新しい)。
+# ここに push(既定ブランチ)と pull_request を追加し、コミットのたびに緑が積み
+# 上がる状態を作る。
+# - 既定ブランチは実機確認: 公開repo pandrabox/Uchinoko のdefault branchは "main"
+#   (思い込みで書かない)。
+# - タグ push(v*)は維持する(SignPath Origin Verificationに直結するリリース
+#   ビルド経路のため、削らない)。
+# - paths-ignore は pull_request にのみ付与し、push(ブランチ/タグ)には付けない。
+#   理由: このトリガ追加の目的そのものが「コミットのたびに緑が見える」ことなので、
+#   push側を条件で間引くと目的を弱める。一方PRは文書のみの変更(README等)で
+#   毎回フルビルドを回す価値が薄いため、ここだけ間引く(2026-07-31判断)。
+on:
+  workflow_dispatch:
+    inputs:
+      version:
+        description: "ビルドバージョン(例: v2.2.9。app\\DiveToPalworld.cs の ToolVersion と一致させること)"
+        required: true
+        type: string
+  push:
+    branches:
+      - main
+    tags:
+      - "v*"
+  pull_request:
+    branches:
+      - main
+    paths-ignore:
+      - "**.md"
+      - "manual/**"
+
+permissions:
+  contents: read
+
+jobs:
+  build:
+    runs-on: windows-latest
+    # release ジョブ(タグpush時のみ)がここで解決したバージョンとハッシュ・artifact IDを
+    # 再利用する。ハッシュはbuild時点の値であり、releaseジョブ側でダウンロード直後に
+    # 再計算した値と突き合わせて改変が無いことを確認する(下記 release ジョブ参照)。
+    outputs:
+      version: ${{ steps.version.outputs.version }}
+      app-sha256: ${{ steps.hashes.outputs.app_sha256 }}
+      zip-sha256: ${{ steps.hashes.outputs.zip_sha256 }}
+      app-artifact-id: ${{ steps.upload-app.outputs.artifact-id }}
+      zip-artifact-id: ${{ steps.upload-zip.outputs.artifact-id }}
+    steps:
+      # actions/checkout はタグではなくコミットSHAで固定する(サプライチェーン改竄耐性、
+      # FIX12/2026-07-31)。SHAは `gh api repos/actions/checkout/git/refs/tags/v4` で
+      # 実際に解決したもの(2026-07-31時点でv4タグが指すコミット = リリースv4.4.0)。
+      # 更新手順: 新しいタグを追いたい場合は同コマンドでSHAを再解決し、コメントの
+      # バージョン番号ごと書き換える。
+      - name: Checkout
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+
+      # push(タグ)以外(ブランチへの通常push・pull_request・
+      # workflow_dispatch未入力)では、リリースタグ名が存在しない。make_dist.ps1は
+      # -Version が app\DiveToPalworld.cs の ToolVersion 定数と一致しないと
+      # EXIT=1で失敗する(build\make_dist.ps1:48実測)ため、"main"や"dev"のような
+      # プレースホルダは使えない。ToolVersion定数をそのまま読み取って使うことで、
+      # タグを打っていない通常コミット・PRでもフルビルドが常に成立するようにする。
+      - name: Resolve version
+        id: version
+        shell: pwsh
+        run: |
+          if ("${{ github.event_name }}" -eq "push" -and "${{ github.ref_type }}" -eq "tag") {
+            $ver = "${{ github.ref_name }}"
+          } elseif ("${{ github.event_name }}" -eq "workflow_dispatch") {
+            $ver = "${{ inputs.version }}"
+          } else {
+            $csContent = Get-Content "app\DiveToPalworld.cs" -Raw
+            if ($csContent -match 'const\s+string\s+ToolVersion\s*=\s*"([^"]+)"') {
+              $ver = $Matches[1]
+            } else {
+              Write-Error "app\DiveToPalworld.cs内にToolVersion定数が見つからない"
+              exit 1
+            }
+          }
+          echo "version=$ver" >> $env:GITHUB_OUTPUT
+
+      # 実測済み: windows-latestは.NET Framework 4.8のcsc.exeを標準搭載
+      # (runner-images Windows2022-Readme.md確認済み)。ここではWindowsイメージが将来
+      # 変わってもfail-fastできるよう存在確認のみ行う(追加インストールではない)。
+      - name: Verify csc.exe is present (fail fast if the runner image ever changes)
+        shell: pwsh
+        run: |
+          $csc = "$env:WINDIR\Microsoft.NET\Framework64\v4.0.30319\csc.exe"
+          if (-not (Test-Path $csc)) { Write-Error "csc.exeが無い(.NET Framework 4.8 Developer Pack想定崩れ、要調査): $csc"; exit 1 }
+          Write-Host "OK: $csc"
+
+      # 実測済み: make_dist.ps1は$env:APPDATA\Python\Python313\
+      # site-packages\ooz.pydをハードコードパスで要求する(開発機のローカルpip installが
+      # 前提の設計、build\make_dist.ps1:924-926)。CIランナーにはこのファイルが存在しない
+      # ため(偽装プロファイルでの再現で確認済み)、ここで明示的に用意する。
+      # pyoozはPyPIにプリビルド済みabi3 wheelとして公開されており、pip downloadで
+      # ソースビルド不要に取得できる(files.pythonhosted.orgからのダウンロードを実機確認済み)。
+      # FIX12(2026-07-31): バージョンとSHA256を固定し、取得後に検証してから使う
+      # (SignPath Origin Verificationが懸念する「ビルドスクリプトが任意のソフトウェアを
+      # 取得しうる」への対策)。
+      # 固定値の出所: pyooz 0.0.8 は abi3 wheel のため win_amd64 向けは1種類のみ存在
+      # (pyooz-0.0.8-cp38-abi3-win_amd64.whl)。SHA256は2026-07-31に実際に
+      # `pip download pyooz==0.0.8` して算出し、PyPI JSON API
+      # (https://pypi.org/pypi/pyooz/0.0.8/json の urls[].digests.sha256)掲載値と
+      # 一致することを確認済み(9c0f22b8bec3277f807215a6256bdc6b77375e4d01067dfb580422c35b1d2d65)。
+      #
+      # 更新手順(将来pyoozのバージョンを上げるとき):
+      #   1. 下の $PyoozVersion / $PyoozWheelName を新バージョンに書き換える
+      #   2. ローカルで `pip download --no-deps --no-cache-dir -d <tmp> pyooz==<新バージョン>`
+      #      を実行し、取得したwhlのSHA256を算出する(PowerShell:
+      #      `Get-FileHash <whl> -Algorithm SHA256`)
+      #   3. https://pypi.org/pypi/pyooz/<新バージョン>/json の digests.sha256 とも
+      #      突き合わせて一致を確認してから $PyoozSha256 を書き換える
+      - name: Acquire pyooz (ooz.pyd) into the path make_dist.ps1 expects
+        shell: pwsh
+        run: |
+          $PyoozVersion = "0.0.8"
+          $PyoozWheelName = "pyooz-0.0.8-cp38-abi3-win_amd64.whl"
+          $PyoozSha256 = "9c0f22b8bec3277f807215a6256bdc6b77375e4d01067dfb580422c35b1d2d65"
+
+          $dlDir = Join-Path $env:RUNNER_TEMP "pyooz_dl"
+          New-Item -ItemType Directory -Force $dlDir | Out-Null
+          python -m pip download --no-deps --no-cache-dir -d $dlDir "pyooz==$PyoozVersion"
+          if ($LASTEXITCODE -ne 0) { Write-Error "pip download pyooz 失敗"; exit 1 }
+          $whl = Get-ChildItem $dlDir -Filter "pyooz-*.whl" | Select-Object -First 1
+          if (-not $whl) { Write-Error "pyoozのwheelが見つからない"; exit 1 }
+          if ($whl.Name -ne $PyoozWheelName) {
+            Write-Error "想定外のpyoozファイル名: $($whl.Name) (期待: $PyoozWheelName)。バージョン固定が効いていない可能性"
+            exit 1
+          }
+          $actualHash = (Get-FileHash -Path $whl.FullName -Algorithm SHA256).Hash.ToLower()
+          if ($actualHash -ne $PyoozSha256) {
+            Write-Error "pyoozのSHA256が不一致: 期待=$PyoozSha256 実際=$actualHash (取得物が改竄・差し替えされた可能性)"
+            exit 1
+          }
+          Write-Host "OK: pyooz SHA256検証通過 ($actualHash)"
+          $zipCopy = Join-Path $dlDir "pyooz.whl.zip"
+          Copy-Item $whl.FullName $zipCopy -Force
+          $dest = Join-Path $env:APPDATA "Python\Python313\site-packages"
+          New-Item -ItemType Directory -Force $dest | Out-Null
+          Expand-Archive -Path $zipCopy -DestinationPath $dest -Force
+          if (-not (Test-Path (Join-Path $dest "ooz.pyd"))) { Write-Error "ooz.pydの展開に失敗"; exit 1 }
+          Write-Host "OK: ooz.pyd -> $dest"
+
+      # 実測済み: python3.dllはCPython公式配布物(stable ABI用
+      # リダイレクタDLL、PSFライセンス、GPLとは無関係)の一部。python.org公式のembeddable
+      # zipに含まれることを実機確認済み。ランナーのhostedtoolcache内部レイアウトに
+      # 依存しない確定的な入手法として採用する。D2P_PYTHON311_DLL環境変数経由での指定を
+      # make_dist.ps1側が最優先で参照する(実機確認済み、931-934行)。
+      #
+      # FIX12(2026-07-31): SHA256を固定し、取得後に検証してから使う(SignPath Origin
+      # Verificationが懸念する「ビルドスクリプトが任意のソフトウェアを取得しうる」への対策)。
+      # 固定値の出所: SHA256は2026-07-31に実際にダウンロードして算出。python.org公式
+      # リリースページ(https://www.python.org/downloads/release/python-3119/)に掲載
+      # されているこのファイルのMD5値(6d9aa08531d48fcc261ba667e2df17c4)と突き合わせて
+      # 同一ファイルであることを確認済み。
+      #
+      # 更新手順(将来3.11系のEOL等でバージョンを上げるとき):
+      #   1. 下の $PyEmbedVersion を新バージョンに書き換える(URLも連動して変わる)
+      #   2. ローカルで新URLからzipを実ダウンロードし、SHA256を算出する(PowerShell:
+      #      `Get-FileHash <zip> -Algorithm SHA256`)
+      #   3. https://www.python.org/downloads/release/python-<新バージョン番号>/ に
+      #      掲載のMD5値とも突き合わせて同一ファイルであることを確認してから
+      #      $PyEmbedSha256 を書き換える
+      - name: Acquire python3.dll (CPython stable-ABI redirector, PSF License)
+        shell: pwsh
+        run: |
+          $PyEmbedVersion = "3.11.9"
+          $PyEmbedUrl = "https://www.python.org/ftp/python/$PyEmbedVersion/python-$PyEmbedVersion-embed-amd64.zip"
+          $PyEmbedSha256 = "009d6bf7e3b2ddca3d784fa09f90fe54336d5b60f0e0f305c37f400bf83cfd3b"
+
+          $dlDir = Join-Path $env:RUNNER_TEMP "py311_embed"
+          New-Item -ItemType Directory -Force $dlDir | Out-Null
+          $zipPath = Join-Path $dlDir "python-$PyEmbedVersion-embed-amd64.zip"
+          Invoke-WebRequest -Uri $PyEmbedUrl -OutFile $zipPath
+          $actualHash = (Get-FileHash -Path $zipPath -Algorithm SHA256).Hash.ToLower()
+          if ($actualHash -ne $PyEmbedSha256) {
+            Write-Error "python embeddable zipのSHA256が不一致: 期待=$PyEmbedSha256 実際=$actualHash (取得物が改竄・差し替えされた可能性)"
+            exit 1
+          }
+          Write-Host "OK: python embeddable zip SHA256検証通過 ($actualHash)"
+          Expand-Archive -Path $zipPath -DestinationPath $dlDir -Force
+          $dll = Join-Path $dlDir "python3.dll"
+          if (-not (Test-Path $dll)) { Write-Error "python3.dllが見つからない"; exit 1 }
+          echo "D2P_PYTHON311_DLL=$dll" >> $env:GITHUB_ENV
+          Write-Host "OK: python3.dll -> $dll"
+
+      # WP35(2026-07-31追加): pytestは署名対象の成果物には含まれない開発時ツールのため、
+      # pyooz/python3.dllのようなSHA256固定は行わずバージョンのみ固定する(ファイル冒頭の
+      # 「pytest ステップ」コメント参照)。
+      - name: Install pytest (test-only tool, not shipped in the signed artifact)
+        shell: pwsh
+        run: |
+          python -m pip install --quiet "pytest==9.0.3"
+          if ($LASTEXITCODE -ne 0) { Write-Error "pytestのインストールに失敗"; exit 1 }
+
+      # このステップの前段(csc.exe確認・ooz.pyd取得・python3.dll取得)により
+      # build\make_dist.ps1 の実行前提はすべて揃っているため、実際に配布zipをビルドして
+      # その実物を検査する統合テスト(test_real_dist_zip_docs_have_no_forbidden_content 等)
+      # もスキップされず実行される。収集0件・import失敗・アサーション失敗のいずれでも
+      # pytestは非ゼロで終了するため、これ単体で「収集ゼロでも成功する」偽の緑を防げる
+      # (実機確認済み: ファイル未検出=exit 4、0件収集=exit 5)。
+      - name: Run public-repo pytest suite (tests/shipcheck/test_dist_shipped_docs_content.py)
+        shell: pwsh
+        run: |
+          python -m pytest tests\shipcheck\test_dist_shipped_docs_content.py -v
+          if ($LASTEXITCODE -ne 0) {
+            Write-Error "公開リポジトリのpytestスイートがFAILした(exit=$LASTEXITCODE)。収集ゼロ・import失敗・テスト失敗のいずれでも非ゼロになるため、原因はログを直接確認すること。"
+            exit 1
+          }
+          Write-Host "OK: 公開リポジトリのpytestスイート PASS"
+
+      - name: Build Uchinoko.exe (app/build_app.ps1 only, csc.exe同梱のみ・追加SDK不要)
+        shell: pwsh
+        run: |
+          pwsh -File app\build_app.ps1
+          if ($LASTEXITCODE -ne 0) { exit 1 }
+
+      - name: Build full distribution package (build/make_dist.ps1)
+        shell: pwsh
+        run: |
+          pwsh -File build\make_dist.ps1 -Version "${{ steps.version.outputs.version }}"
+          if ($LASTEXITCODE -ne 0) { exit 1 }
+
+      # 実測で発覚: build\make_dist.ps1:1055 は zip作成の直後に
+      # dist\stage を無条件で削除する(既存の意図した挙動。BOOTH向け配布物の残骸
+      # 掃除)。そのため、このstepより後で dist\stage\... を参照する
+      # upload-artifact は常に「ファイルが無い」で失敗する(if-no-files-found: error)。
+      # make_dist.ps1側は変更しない制約のため、完成したzip自体を展開し直して
+      # 署名対象exeを取り出す方式に切り替えた(ローカル実測でEXIT=0を確認済み)。
+      #
+      # WP(2026-07-31、ランチャー廃止と配布レイアウトのフラット化に追随):
+      # 署名対象exeは Uchinoko_for_Palworld\Uchinoko.exe の
+      # 1本のみになった(旧: ルートのランチャーexe + _internal\の本体exeの2本)。
+      # _internal\ という入れ子自体が無くなっている(tests\shipcheck\
+      # test_signpath_dist_layout.py が実物のzipに対してこれを検査する)。
+      - name: Re-extract the signing-candidate exe from the finished zip (dist\stage no longer exists at this point)
+        shell: pwsh
+        run: |
+          $zip = Get-ChildItem "dist" -Filter "Uchinoko_for_Palworld_*_full*.zip" | Select-Object -First 1
+          if (-not $zip) { Write-Error "配布zipが見つからない"; exit 1 }
+          $extractDir = Join-Path $env:RUNNER_TEMP "dist_extract"
+          Expand-Archive -Path $zip.FullName -DestinationPath $extractDir -Force
+          $app = Join-Path $extractDir "Uchinoko_for_Palworld\Uchinoko.exe"
+          if (-not (Test-Path $app)) { Write-Error "展開後に本体exeが見つからない: $app"; exit 1 }
+          echo "DIST_EXTRACT_DIR=$extractDir" >> $env:GITHUB_ENV
+          Write-Host "OK: $app"
+
+      # WP34(2026-07-31追加): 成果物のSHA256をCIログ/サマリへ記録する(第三者が
+      # 「公開されたzip/exeが本当にこのCI実行から出たものか」を突き合わせられるように)。
+      # ここで記録した値はジョブ出力(app-sha256/zip-sha256)としてもreleaseジョブへ渡し、
+      # releaseジョブ側がartifactダウンロード後に再計算した値と一致することも確認する
+      # (GitHub Actionsのartifact転送自体は内部的にzip化・整合性検証されているため事故は
+      # 考えにくいが、証跡として明示的に二重化する)。
+      - name: Compute artifact hashes (provenance)
+        id: hashes
+        shell: pwsh
+        run: |
+          $appPath = Join-Path $env:DIST_EXTRACT_DIR "Uchinoko_for_Palworld\Uchinoko.exe"
+          $zip = Get-ChildItem "dist" -Filter "Uchinoko_for_Palworld_*_full*.zip" | Select-Object -First 1
+          if (-not (Test-Path $appPath)) { Write-Error "ハッシュ計算対象のexeが見つからない: $appPath"; exit 1 }
+          if (-not $zip) { Write-Error "ハッシュ計算対象のzipが見つからない"; exit 1 }
+
+          $appHash = (Get-FileHash -Path $appPath -Algorithm SHA256).Hash.ToLower()
+          $zipHash = (Get-FileHash -Path $zip.FullName -Algorithm SHA256).Hash.ToLower()
+          echo "app_sha256=$appHash" >> $env:GITHUB_OUTPUT
+          echo "zip_sha256=$zipHash" >> $env:GITHUB_OUTPUT
+
+          Add-Content -Path $env:GITHUB_STEP_SUMMARY -Encoding utf8 -Value "### 成果物 SHA256(署名前・provenance用)"
+          Add-Content -Path $env:GITHUB_STEP_SUMMARY -Encoding utf8 -Value ""
+          Add-Content -Path $env:GITHUB_STEP_SUMMARY -Encoding utf8 -Value "| ファイル | SHA256 |"
+          Add-Content -Path $env:GITHUB_STEP_SUMMARY -Encoding utf8 -Value "|---|---|"
+          Add-Content -Path $env:GITHUB_STEP_SUMMARY -Encoding utf8 -Value "| Uchinoko.exe | ``$appHash`` |"
+          Add-Content -Path $env:GITHUB_STEP_SUMMARY -Encoding utf8 -Value "| $($zip.Name) | ``$zipHash`` |"
+          Write-Host "OK: app=$appHash zip=$zipHash"
+
+      # actions/upload-artifact もコミットSHAで固定する(FIX12/2026-07-31)。SHAは
+      # `gh api repos/actions/upload-artifact/git/refs/tags/v4` で実際に解決したもの
+      # (2026-07-31時点でv4タグが指すコミット = リリースv4.6.2)。2件とも同一SHA。
+      #
+      # WP(2026-07-31、ランチャー廃止と配布レイアウトのフラット化に追随): 署名対象artifactは1本のみになった。
+      # `uchinoko-launcher-unsigned`(ランチャーexe)は廃止。旧 `uchinoko-app-unsigned`
+      # という名前は「_internal\の本体exe」に対して付けていたものだが、その本体exeが
+      # そのままルートの唯一のエントリポイントに昇格したので意味は変わらない
+      # (「アプリ本体の未署名exe」)。そのため名前は変更せず維持する
+      # (むやみな改名は、この名前を参照する将来のSignPath側設定・ドキュメントとの
+      # 不整合を増やすだけと判断した)。
+      - name: Upload unsigned Uchinoko.exe (signing candidate)
+        id: upload-app
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        with:
+          name: uchinoko-app-unsigned
+          path: ${{ env.DIST_EXTRACT_DIR }}\Uchinoko_for_Palworld\Uchinoko.exe
+          if-no-files-found: error
+
+      - name: Upload full distribution zip (reference, unsigned)
+        id: upload-zip
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        with:
+          name: uchinoko-dist-zip-unsigned
+          path: dist\Uchinoko_for_Palworld_*_full*.zip
+          if-no-files-found: error
+
+  # WP34(2026-07-31追加): タグ push(v*)のときだけ、build ジョブの成果物を
+  # GitHub Release の資産として添付する。ファイル冒頭の「release ジョブ」コメントに
+  # 設計判断(draft既定・バージョン整合性の二重確認)を記載。
+  #
+  # 従来、公開リポの GitHub Releases はこのCIと無関係に人間が
+  # `gh release create` + `gh release upload` で手動作成しており、CIビルドを経由した
+  # リリースは一度も無かった(開発側の調査で確認)。SignPath Origin Verificationは
+  # 「署名対象がCIから出ていること」を要求するため、これでは要件を満たせない。
+  # このジョブがその欠落を埋める。
+  release:
+    name: Publish GitHub Release (tag push only)
+    needs: build
+    # if: を指定すると既定の success() 判定が上書きされるため明示的に含める
+    # (build ジョブが失敗・キャンセルされた場合にreleaseジョブを走らせないため)。
+    if: success() && startsWith(github.ref, 'refs/tags/v')
+    runs-on: windows-latest
+    # トップレベルの `permissions: contents: read` をこのジョブだけ書き込み可能へ上書きする
+    # (最小権限: build/検証ジョブはreadのままでよい)。
+    #
+    # ★注意(2026-07-31実測、push後に必ず確認すること★:
+    # `gh api repos/pandrabox/Uchinoko/actions/permissions/workflow` の実測値は
+    # `default_workflow_permissions: "read"`。リポジトリ設定がread-onlyに固定されていると、
+    # ワークフロー側でどれだけ`permissions: contents: write`を要求しても実際には昇格されず、
+    # `gh release create`がHTTP 403で失敗する(GitHubの仕様: 既定権限がreadの場合、
+    # ワークフローYAMLはそれを「狭める」ことしかできず「広げる」ことはできない)。
+    # このワークフローをタグpushで実際に動かす前に、オーナーが
+    # Settings > Actions > General > Workflow permissions を
+    # 「Read and write permissions」へ変更する必要がある(本WPの権限外、実施していない)。
+    permissions:
+      contents: write
+    steps:
+      - name: Download unsigned Uchinoko.exe artifact
+        uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4.3.0
+        with:
+          name: uchinoko-app-unsigned
+          path: release_assets
+
+      - name: Download full distribution zip artifact
+        uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4.3.0
+        with:
+          name: uchinoko-dist-zip-unsigned
+          path: release_assets
+
+      # バージョン整合性の再確認(defense-in-depth)。タグ名と app\DiveToPalworld.cs の
+      # ToolVersion 定数が食い違った場合に失敗させる、という要件そのものは
+      # build\make_dist.ps1 が既に -Version 引数とToolVersionの突き合わせで実装済み
+      # (make_dist.ps1:59-64、不一致ならEXIT=1でbuildジョブ自体が落ちる)。
+      # ここでは「buildジョブが実際にどのバージョンを解決したか」とタグ名を再度突き合わせ、
+      # 将来 Resolve version のロジックが変わってこの前提が崩れても、releaseジョブ単体で
+      # 検知できるようにしておく。
+      - name: Assert tag matches the version resolved by the build job
+        shell: pwsh
+        run: |
+          $tag = "${{ github.ref_name }}"
+          $ver = "${{ needs.build.outputs.version }}"
+          if ($tag -ne $ver) {
+            Write-Error "タグ($tag)とbuildジョブが解決したバージョン($ver)が不一致。app\DiveToPalworld.cs の ToolVersion との整合はbuild\make_dist.ps1側で既に検査されているはずだが、ここでも一致しないため失敗させる。"
+            exit 1
+          }
+          Write-Host "OK: タグとバージョンが一致 ($tag)"
+
+      # ダウンロードした成果物がbuildジョブで計算したハッシュと一致することを確認してから、
+      # リリース資産用に分かりやすい名前でコピーし、SHA256SUMS.txtを添える。
+      - name: Verify hashes and prepare release assets
+        shell: pwsh
+        run: |
+          $version = "${{ needs.build.outputs.version }}"
+          $expectedAppHash = "${{ needs.build.outputs.app-sha256 }}"
+          $expectedZipHash = "${{ needs.build.outputs.zip-sha256 }}"
+
+          $appFile = Get-ChildItem "release_assets" -Filter "Uchinoko.exe" -Recurse | Select-Object -First 1
+          $zipFile = Get-ChildItem "release_assets" -Filter "Uchinoko_for_Palworld_*_full*.zip" -Recurse | Select-Object -First 1
+          if (-not $appFile) { Write-Error "ダウンロードしたexeが見つからない"; exit 1 }
+          if (-not $zipFile) { Write-Error "ダウンロードしたzipが見つからない"; exit 1 }
+
+          $actualAppHash = (Get-FileHash -Path $appFile.FullName -Algorithm SHA256).Hash.ToLower()
+          $actualZipHash = (Get-FileHash -Path $zipFile.FullName -Algorithm SHA256).Hash.ToLower()
+          if ($actualAppHash -ne $expectedAppHash) {
+            Write-Error "Uchinoko.exeのSHA256がbuildジョブと不一致: build=$expectedAppHash download=$actualAppHash"
+            exit 1
+          }
+          if ($actualZipHash -ne $expectedZipHash) {
+            Write-Error "配布zipのSHA256がbuildジョブと不一致: build=$expectedZipHash download=$actualZipHash"
+            exit 1
+          }
+          Write-Host "OK: ダウンロード後もハッシュ一致 (app=$actualAppHash zip=$actualZipHash)"
+
+          # リリース資産としてわかりやすい名前へリネームしてコピーする(artifact内は
+          # generic名"Uchinoko.exe"のため、そのままリリースへ添付すると他バージョンと
+          # 見分けがつかない)。
+          New-Item -ItemType Directory -Force "release_upload" | Out-Null
+          Copy-Item $appFile.FullName "release_upload\Uchinoko_${version}.exe"
+          Copy-Item $zipFile.FullName "release_upload\$($zipFile.Name)"
+          Set-Content -Path "release_upload\SHA256SUMS.txt" -Encoding ascii -NoNewline -Value (
+            "$actualAppHash  Uchinoko_${version}.exe`n$actualZipHash  $($zipFile.Name)`n"
+          )
+
+          # 注意: PowerShellの二重引用符文字列内でバッククォート3連(コードフェンス)を
+          # 書くと、バッククォートがエスケープ文字として解釈され構文エラーになる
+          # (` が次の文字をエスケープするため、"```" は閉じ引用符を食ってしまう)。
+          # そのためこの行だけ単一引用符(リテラル文字列)を使う。
+          Add-Content -Path $env:GITHUB_STEP_SUMMARY -Encoding utf8 -Value "### リリース資産 SHA256(ダウンロード後に再計算・buildジョブの値と一致確認済み)"
+          Add-Content -Path $env:GITHUB_STEP_SUMMARY -Encoding utf8 -Value ""
+          Add-Content -Path $env:GITHUB_STEP_SUMMARY -Encoding utf8 -Value '```'
+          Get-Content "release_upload\SHA256SUMS.txt" | ForEach-Object { Add-Content -Path $env:GITHUB_STEP_SUMMARY -Encoding utf8 -Value $_ }
+          Add-Content -Path $env:GITHUB_STEP_SUMMARY -Encoding utf8 -Value '```'
+
+      # 既存releaseの有無で create / upload を出し分ける(同一タグでの再実行に対して冪等)。
+      # 作成時は既定でdraftにする(理由はファイル冒頭コメント参照)。
+      - name: Create or update draft GitHub Release for this tag
+        shell: pwsh
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          $tag = "${{ github.ref_name }}"
+          $runUrl = "${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}"
+          $sha = "${{ github.sha }}"
+
+          $notesLines = @(
+            "このリリースは GitHub Actions のタグ起動ビルド ($runUrl) がソースからビルドした成果物です。",
+            "ソースコミット: $sha",
+            "",
+            "**署名について**: 現時点では SignPath 未連携のため、添付の exe / zip は未署名です。SignPath 連携後、署名済み成果物をこのリリースへ追加する予定です。",
+            "",
+            "SHA256(ダウンロードして突き合わせる場合は SHA256SUMS.txt を参照):",
+            "",
+            "このリリースは CI が自動作成した下書き(draft)です。内容を確認してから手動で公開してください。"
+          )
+          $notesFile = Join-Path $env:RUNNER_TEMP "release_notes.md"
+          Set-Content -Path $notesFile -Encoding utf8 -Value ($notesLines -join "`n")
+
+          # 注意: PowerShellは(bashと違い)外部exeへ渡す引数のワイルドカード("*")を
+          # 自動展開しない。"release_upload\Uchinoko_*.exe" のような文字列をそのまま
+          # gh.exe に渡すと、リテラルなファイル名として扱われ「ファイルが無い」で
+          # 失敗する。Get-ChildItemでワイルドカードをPowerShell側で解決してから、
+          # 配列splat(@files)で1ファイルずつ引数展開する。
+          $assetFiles = @(Get-ChildItem "release_upload" -File | Select-Object -ExpandProperty FullName)
+          if ($assetFiles.Count -ne 3) {
+            Write-Error "リリース資産が3点(exe/zip/SHA256SUMS.txt)揃っていない: $($assetFiles -join ', ')"
+            exit 1
+          }
+
+          $exists = $true
+          gh release view $tag 2>$null 1>$null
+          if ($LASTEXITCODE -ne 0) { $exists = $false }
+
+          if (-not $exists) {
+            gh release create $tag --draft --title $tag --notes-file $notesFile @assetFiles
+            if ($LASTEXITCODE -ne 0) { Write-Error "gh release create 失敗"; exit 1 }
+            Write-Host "OK: draft release $tag を作成し、成果物3点(exe/zip/SHA256SUMS.txt)を添付した"
+          } else {
+            gh release upload $tag @assetFiles --clobber
+            if ($LASTEXITCODE -ne 0) { Write-Error "gh release upload 失敗"; exit 1 }
+            Write-Host "OK: 既存release $tag へ成果物を上書きアップロードした"
+          }
+
+# ------------------------------------------------------------------------------------
+# SignPath連携(雛形・現状はコメントアウト。SignPath側でプロジェクト作成・
+# GitHub連携設定を終えてから有効化する)
+#
+# TODO(オーナー): SignPath アカウント作成後に有効化
+#
+# WP34(2026-07-31)で docs.signpath.io/trusted-build-systems/github を実際に取得して
+# 内容を確認し、下記を修正した:
+#   - アクションの正しい参照は `signpath/github-action-submit-signing-request@v2`
+#     (旧雛形の `signpath-io/...@v1` という組織名・バージョンは公式ドキュメントに
+#     存在しない。おそらく初期雛形作成時の推測に基づく誤り)
+#   - 公式ドキュメントが示す構造は「build → (unsigned artifactをupload) →
+#     signを直後に実行」の1ジョブ内連結、または依存ジョブ形式のどちらでも良い。
+#     ここでは既存の `build` ジョブ構成(1本のexeをuploadする形)に合わせ、
+#     `needs: build` の別ジョブとして構成する
+#   - Permissions: 公式ドキュメントは「SignPath GitHub Appを未導入のprivateリポジトリ」
+#     の場合に `actions: read` + `contents: read` が要ると明記している。
+#     このリポジトリはpublicかつSignPath GitHub App導入前提のため、有効化時に
+#     実際に必要な最小permissionsを再確認すること(導入後は不要な可能性が高い)
+#
+# 有効化手順の概要:
+#   1. SignPath Foundationでプロジェクト(project-slug)・署名ポリシー
+#      (signing-policy-slug、例: release-signing)を作成
+#   2. SignPath GitHub App を pandrabox/Uchinoko にインストールし、リポジトリアクセスを許可
+#      (docs.signpath.io/trusted-build-systems/github の Prerequisites に明記)
+#   3. SignPath側でGitHub連携を設定し、SIGNPATH_API_TOKEN を取得
+#   4. pandrabox/Uchinoko の Settings > Secrets and variables > Actions に
+#      SIGNPATH_API_TOKEN を登録
+#   5. 下記ジョブのコメントを外し、organization-id / project-slug /
+#      signing-policy-slug の値をSignPathダッシュボードの実値に置き換える
+#   6. 有効化後は、上の `release` ジョブが未署名artifactではなく **このsignジョブが
+#      output-artifact-directory へ書き出した署名済みファイル** を添付するように
+#      作り替える(`needs: [build, sign]` へ変更し、download-artifact の対象を
+#      signジョブが別途uploadした `uchinoko-app-signed` へ切り替える)。
+#      現状の release ジョブは「署名前の未署名成果物をdraft releaseへ添付し、人間が
+#      確認してから公開する」という暫定形であり、SignPath有効化後はこの手順6で
+#      署名済み成果物に差し替わる想定(ファイル冒頭の release ジョブ設計コメント参照)。
+#
+#  sign:
+#    needs: build
+#    runs-on: windows-latest
+#    permissions:
+#      actions: read
+#      contents: read
+#    steps:
+#      - name: Submit signing request to SignPath (Uchinoko.exe)
+#        uses: signpath/github-action-submit-signing-request@v2
+#        with:
+#          api-token: '${{ secrets.SIGNPATH_API_TOKEN }}'
+#          organization-id: '<SignPathダッシュボードで発行されるorg id>'
+#          project-slug: 'uchinoko'
+#          signing-policy-slug: 'release-signing'
+#          artifact-configuration-slug: 'app-exe'
+#          github-artifact-id: '${{ needs.build.outputs.app-artifact-id }}'
+#          wait-for-completion: true
+#          output-artifact-directory: 'signed\app'
+#      - name: Upload signed artifacts
+#        uses: actions/upload-artifact@v4
+#        with:
+#          name: uchinoko-app-signed
+#          path: signed\**
+# ------------------------------------------------------------------------------------

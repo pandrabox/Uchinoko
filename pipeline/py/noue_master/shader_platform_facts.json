@@ -1,0 +1,14 @@
+{
+  "schema": "d2p_noue_master_shader_platform_facts/1",
+  "asset": "noue恒久マスターマテリアル(pipeline/py/noue_master配下, M_VP_*)",
+  "platforms_cooked": [
+    "PCD3D_SM5",
+    "PCD3D_SM6"
+  ],
+  "provenance": {
+    "cooked_at": "2026-07-21",
+    "ue_engine_version": "5.1.1-23901901+++UE5+Release-5.1",
+    "method": "UE BuildCookRun (Win64, Shipping) でこのリポジトリのnoue恒久マスター資産をcookした際の実測",
+    "source_note": "元の生 cookログ(開発機の絶対パス・個人アバター名を含む)から、preflight_pak.py G7が必要とする「SM5/SM6双方でcook済み」という事実だけを抽出した記録。生ログ自体は配布物には含めない(.trush/cooklog_fix_20260726/へ退避済み)。"
+  }
+}

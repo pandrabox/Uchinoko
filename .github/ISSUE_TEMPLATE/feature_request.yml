@@ -1,0 +1,29 @@
+name: 機能要望 / Feature request
+description: 新機能や改善の提案
+title: "[Feature] "
+labels: ["enhancement"]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        ご提案ありがとうございます。投稿前に、このツールの対応スコープ
+        ([`CONTRIBUTING.md`](../../CONTRIBUTING.md) 参照)に収まる内容かを
+        確認いただけると助かります。
+
+        Thanks for the suggestion. Before posting, please check that the
+        request fits within this tool's supported scope (see
+        [`CONTRIBUTING.md`](../../CONTRIBUTING.md)).
+  - type: textarea
+    id: problem
+    attributes:
+      label: 解決したい課題 / What problem does this solve?
+      description: どんな場面で困っているか、何ができないと不便かを書いてください。
+    validations:
+      required: true
+  - type: textarea
+    id: proposal
+    attributes:
+      label: 提案内容 / Proposed solution
+      description: こうなってほしい、という具体的な内容があれば書いてください。
+    validations:
+      required: false

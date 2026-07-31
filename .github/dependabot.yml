@@ -1,0 +1,18 @@
+# Dependabot configuration for the public repository (pandrabox/Uchinoko).
+#
+# This project's own build/runtime dependencies (pyooz, the VRM Blender add-on,
+# Blender itself) are pinned by explicit version + SHA256 verification in
+# build.yml and ensure_blender.ps1 (see README.md "License" section), not by a
+# package manifest Dependabot can parse. The one ecosystem Dependabot can
+# usefully watch here is the GitHub Actions used by build.yml itself, which are
+# pinned to commit SHAs with a version comment (see build.yml) — Dependabot
+# opens a PR when a pinned action has a newer release, so the pin stays current
+# instead of silently going stale.
+version: 2
+updates:
+  - package-ecosystem: "github-actions"
+    directory: "/"
+    schedule:
+      interval: "weekly"
+    commit-message:
+      prefix: "chore(deps)"
