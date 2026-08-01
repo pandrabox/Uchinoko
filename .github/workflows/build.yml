@@ -78,7 +78,7 @@ jobs:
       # 軽量CIになっても、実行するアクション自体の出自固定は引き続き価値がある)。
       # SHAは `gh api repos/actions/checkout/git/refs/tags/v4.4.0` で実際に解決したもの。
       - name: Checkout
-        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
 
       # actions/setup-python もコミットSHAで固定する。SHAは
       # `gh api repos/actions/setup-python/git/refs/tags/v5.6.0` で実際に解決したもの
