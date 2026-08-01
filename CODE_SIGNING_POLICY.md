@@ -50,6 +50,15 @@
 より詳細な取り扱いは [`SECURITY.md`](SECURITY.md) の「このツールの設計上の前提」節、
 および [`PRIVACY.md`](PRIVACY.md) を参照してください。
 
+**進行中の移行についての注記(dev#532、2026-08-01時点)**: 本体GUI(`app\
+DiveToPalworld.cs`、csc.exe/WinForms)を `app_py\`(Python/tkinter)へ
+全面書き直しする作業が進行中です。移行完了まで、実際に出荷される実行ファイルの
+実装は上記のとおり `app\DiveToPalworld.cs` のままです。移行後は同じ2経路
+(起動時の更新確認・明示操作時の診断ログ送信)が、契約を変えずに
+`app_py\update_check.py`(`check_for_update`)および `app_py\inquiry.py`
+(`build_report_payload_json`/`send_report_payload`)へ実装が移る設計です。
+送信先URL・送信タイミング・ユーザー確認を要する点はいずれも変更しません。
+
 ## `.signpath/` ポリシーファイルについて
 
 SignPath Foundation から署名を受けている一部のオープンソースプロジェクトは、
@@ -133,6 +142,18 @@ Beyond these two paths, this program does not transmit information without the
 user's explicit action. See [`SECURITY.md`](SECURITY.md) ("Design assumptions
 of this tool") for more detail, and [`PRIVACY.md`](PRIVACY.md) (English version:
 [`PRIVACY.en.md`](PRIVACY.en.md)) for the full privacy policy.
+
+**A note on the ongoing migration (dev#532, as of 2026-08-01)**: the main GUI
+(`app\DiveToPalworld.cs`, csc.exe/WinForms) is being rewritten from scratch in
+`app_py\` (Python/tkinter). Until that migration is complete, the code that
+actually ships is still `app\DiveToPalworld.cs` as described above. Once
+migration completes, the same two paths (the startup update check, and the
+diagnostic log sent only on explicit user action) are planned to move — with
+the same contract, unchanged — to `app_py\update_check.py`
+(`check_for_update`) and `app_py\inquiry.py`
+(`build_report_payload_json`/`send_report_payload`). The destination URL,
+timing, and the requirement for user confirmation before sending do not
+change.
 
 ### On the `.signpath/` policy directory
 

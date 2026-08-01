@@ -303,6 +303,53 @@ class TestCanaryAndCiAndFreshness:
 
 
 # ---------------------------------------------------------------------------
+# dev#570: net_watch 見張りの見張り(ハートビート停止検知)
+# ---------------------------------------------------------------------------
+
+class TestNetWatchStoppedDetection:
+    def test_stale_heartbeat_detected(self):
+        """ハートビートがしきい値超過して古ければ『見張り停止』イベントを返す。"""
+        now = datetime(2026, 8, 1, 12, 0, 0, tzinfo=timezone.utc)
+        heartbeat_iso = "2026-08-01T11:58:00Z"  # 120秒前 > 60秒しきい値
+        ev = sweep.detect_net_watch_stopped_event(now, heartbeat_iso, stale_seconds=60)
+        assert ev is not None
+        assert ev["key"] == "freshness:net_watch_stopped"
+        assert ev["urgent"] is True
+
+    def test_fresh_heartbeat_not_detected(self):
+        """負の対照: 正常稼働中(しきい値以内)はイベントを生成しない。"""
+        now = datetime(2026, 8, 1, 12, 0, 0, tzinfo=timezone.utc)
+        heartbeat_iso = "2026-08-01T11:59:30Z"  # 30秒前 <= 60秒しきい値
+        ev = sweep.detect_net_watch_stopped_event(now, heartbeat_iso, stale_seconds=60)
+        assert ev is None
+
+    def test_missing_heartbeat_not_detected(self):
+        """ハートビートファイルが存在しない(デーモン未起動)場合は検知しない
+        (常駐の起動登録はオーナー承認後の任意運用のため、未起動を停止として
+        警告し続けるのは誤検知)。"""
+        now = datetime(2026, 8, 1, 12, 0, 0, tzinfo=timezone.utc)
+        ev = sweep.detect_net_watch_stopped_event(now, None, stale_seconds=60)
+        assert ev is None
+
+    def test_malformed_heartbeat_not_detected(self):
+        """壊れたタイムスタンプは安全側で検知しない(通知本体の生成を止めない)。"""
+        now = datetime(2026, 8, 1, 12, 0, 0, tzinfo=timezone.utc)
+        ev = sweep.detect_net_watch_stopped_event(now, "not-a-timestamp", stale_seconds=60)
+        assert ev is None
+
+    def test_real_read_heartbeat_missing_returns_none(self, tmp_path, monkeypatch):
+        monkeypatch.setenv("EVENTBUS_STATE_DIR", str(tmp_path / "eventbus_state"))
+        assert sweep._real_read_net_watch_heartbeat() is None
+
+    def test_real_read_heartbeat_present_returns_content(self, tmp_path, monkeypatch):
+        state_dir = tmp_path / "eventbus_state"
+        monkeypatch.setenv("EVENTBUS_STATE_DIR", str(state_dir))
+        state_dir.mkdir(parents=True, exist_ok=True)
+        (state_dir / "net_watch_heartbeat.txt").write_text("2026-08-01T12:00:00Z", encoding="utf-8")
+        assert sweep._real_read_net_watch_heartbeat() == "2026-08-01T12:00:00Z"
+
+
+# ---------------------------------------------------------------------------
 # dev#504: ぱん声スニペット配達(最終発言者=pandraboxのとき本文冒頭80字を同梱)
 # ---------------------------------------------------------------------------
 
@@ -344,6 +391,57 @@ class TestPanSnippet:
         events = sweep.detect_issue_events(issues, comments, Path("nonexistent.db"),
                                             datetime(2026, 7, 1, 3, tzinfo=timezone.utc))
         assert "— " not in events[0]["summary"]
+
+
+# ---------------------------------------------------------------------------
+# dev#531: 通知の詳細行(初回配達のみ)の材料(title/actor/excerpt)
+# ---------------------------------------------------------------------------
+
+class TestIssueHumanDetailFields:
+    def test_detect_issue_events_includes_title_actor_excerpt_for_non_pan(self):
+        """非panでも title/actor/excerpt は常に格納される(summaryへの抜粋付与は
+        pan限定のまま——dev#531の詳細行はsummaryと独立した材料を使うため)。"""
+        issues = [_issue(310, title="タイトルです", login="pandrabox")]
+        comments = [_comment(ISSUE_URL.format(310), "some_external_user",
+                              "2026-07-01T02:00:00Z", body="非pan本文の抜粋テスト\n2行目")]
+        events = sweep.detect_issue_events(issues, comments, Path("nonexistent.db"),
+                                            datetime(2026, 7, 1, 3, tzinfo=timezone.utc))
+        assert events[0]["title"] == "タイトルです"
+        assert events[0]["actor"] == "some_external_user"
+        assert events[0]["excerpt"] == "非pan本文の抜粋テスト"
+        assert "非pan本文の抜粋テスト" not in events[0]["summary"]  # summaryは従来どおり不変
+
+    def test_detect_issue_events_pan_excerpt_matches_summary_snippet(self):
+        issues = [_issue(311, title="T", login="pandrabox")]
+        comments = [_comment(ISSUE_URL.format(311), "pandrabox", "2026-07-01T02:00:00Z",
+                              body="ぱんの発言抜粋")]
+        events = sweep.detect_issue_events(issues, comments, Path("nonexistent.db"),
+                                            datetime(2026, 7, 1, 3, tzinfo=timezone.utc))
+        assert events[0]["excerpt"] == "ぱんの発言抜粋"
+        assert "ぱんの発言抜粋" in events[0]["summary"]  # pan時はsummaryにも従来どおり含む
+
+    def test_merge_into_queue_carries_title_actor_excerpt_into_event(self):
+        detected = [{
+            "key": "issue:399", "kind": "issue_human", "urgent": False, "pan": False,
+            "issue_number": 399, "fingerprint": "fp1", "summary": "v1",
+            "title": "T399", "actor": "A399", "excerpt": "E399",
+        }]
+        q = sweep.merge_into_queue({}, detected, {}, "2026-07-31T10:00:00Z")
+        assert q["issue:399"].title == "T399"
+        assert q["issue:399"].actor == "A399"
+        assert q["issue:399"].excerpt == "E399"
+
+    def test_merge_into_queue_defaults_missing_detail_fields_to_none(self):
+        """title/actor/excerptを持たない検出辞書(他kindや旧形式)でも例外にならず
+        Noneのままマージされる(後方互換)。"""
+        detected = [{
+            "key": "issue:400", "kind": "issue_human", "urgent": False, "pan": False,
+            "issue_number": 400, "fingerprint": "fp1", "summary": "v1",
+        }]
+        q = sweep.merge_into_queue({}, detected, {}, "2026-07-31T10:00:00Z")
+        assert q["issue:400"].title is None
+        assert q["issue:400"].actor is None
+        assert q["issue:400"].excerpt is None
 
 
 # ---------------------------------------------------------------------------

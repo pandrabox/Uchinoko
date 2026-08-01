@@ -19,7 +19,7 @@ clone しただけでは揃いません。ビルド前に各自で用意して�
 | 前提物 | 入手元 | 配置方法 |
 |---|---|---|
 | pyooz 0.0.8(`ooz.pyd`) | `pip install pyooz`、またはソースを同梱している `third_party\pyooz-0.0.8-source\pyooz-0.0.8.tar.gz` からビルド | Python 3.13 環境のユーザー site-packages(`pip install` の既定出力先)に入っていれば自動検出されます |
-| python3.dll(Python 3.11、stable ABI リダイレクタ) | 公式サイト [python.org](https://www.python.org/downloads/release/python-3110/) から Python 3.11(64-bit)をインストール | 既定のインストール先に入っていれば自動検出されます。別の場所に置く場合は環境変数 `D2P_PYTHON311_DLL` にフルパスを設定してください |
+| python3.dll(Python 3.11、stable ABI リダイレクタ) | 準備不要(ビルドが自動取得する embeddable Python 3.11.9 に含まれるものを使用) | 自動。別のファイルを使う場合のみ環境変数 `D2P_PYTHON311_DLL` にフルパスを設定してください(どの経路でも「フォワード先=python311」検証を通らないとビルドは失敗します) |
 
 前提物が揃っていない状態で `build\make_dist.ps1` を実行すると、何が足りないか・
 どこから入手すべきかを明示してビルドを中断します(黙って失敗する設計にはしていません)。
@@ -62,6 +62,28 @@ Blenderポータブル本体は配布zipに同梱されず、利用者の初回�
 自動取得される方式(`pipeline\cli\ensure_blender.ps1`)のため、zipサイズは
 本体コードのみを含む数MB程度に収まります。
 
+## 進行中の移行: Python版GUI(dev#532、2026-08-01時点ではまだ出荷経路ではない)
+
+`app\DiveToPalworld.cs`(csc.exe/WinForms)は、dev#532で `app_py\`
+(Python/tkinter)への全面書き直しが進行中です。**2026-08-01時点では
+移行はまだ完了しておらず、上記の手順1・2(csc.exe/pwsh経由のビルド)が
+引き続き唯一の正式な配布経路です。** `csc.exe`(.NET Framework 4.8)と
+PowerShell 7+の前提は、この移行が完了(統合WP=D1完了)するまで変わりません。
+
+移行完了後は本体exeの代わりに `Uchinoko.bat` + 組み込み版Python
+(python.org embeddable、tkinter同梱)を配布する設計です
+(詳細: `work\wp532A\DESIGN.md`)。現時点で移行中のコードを直接動かして
+確認したい場合は以下が使えます(いずれも開発用途、配布物のビルド手順
+としてはまだ確定していません):
+
+```
+python app_py\main.py            # GUIを直接起動して動作確認
+python app_py\build.py --fixture # bat+組み込みPythonのパッケージング試作
+```
+
+この節は、統合WP(D1)が実際に配布経路を切り替えた時点で、上記の手順1・2の
+記述そのものを書き換える形に更新する予定です。
+
 ## 未検証の部分(正直に明記します)
 
 - **GitHub Actions 等の hosted runner 上での実行は本文書作成時点では未検証**です。
@@ -103,7 +125,7 @@ so a plain clone does not provide them. Obtain them yourself before building.
 | Prerequisite | Source | How to place it |
 |---|---|---|
 | pyooz 0.0.8 (`ooz.pyd`) | `pip install pyooz`, or build it from the bundled source at `third_party\pyooz-0.0.8-source\pyooz-0.0.8.tar.gz` | Auto-detected if present in the user site-packages of your Python 3.13 environment (the default `pip install` location) |
-| python3.dll (Python 3.11, stable ABI redirector) | Install Python 3.11 (64-bit) from the official site [python.org](https://www.python.org/downloads/release/python-3110/) | Auto-detected if installed in the default location. If placed elsewhere, set the full path in the `D2P_PYTHON311_DLL` environment variable |
+| python3.dll (Python 3.11, stable ABI redirector) | No preparation needed (taken from the embeddable Python 3.11.9 that the build downloads automatically) | Automatic. Only set the `D2P_PYTHON311_DLL` environment variable to a full path if you need a different file (either way, the build fails unless the file passes the "forwards to python311" check) |
 
 If you run `build\make_dist.ps1` without these prerequisites in place, it stops the
 build and tells you exactly what is missing and where to get it (it is not designed
@@ -147,6 +169,30 @@ this command from a clean clone with `-Version` set to the same value as
 bundled in the distribution zip — it is fetched automatically from the official site
 on first launch (`pipeline\cli\ensure_blender.ps1`) — which is why the zip, containing
 only the tool's own code, stays a few MB in size.
+
+### Ongoing migration: Python-based GUI (dev#532, not yet the shipping path as of 2026-08-01)
+
+`app\DiveToPalworld.cs` (csc.exe / WinForms) is being rewritten from scratch in
+`app_py\` (Python / tkinter) under dev#532. **As of 2026-08-01 this migration is
+not complete, and Steps 1-2 above (building via csc.exe/pwsh) remain the only
+official distribution path.** The `csc.exe` (.NET Framework 4.8) and
+PowerShell 7+ prerequisites stay unchanged until this migration finishes (the
+integration work package, "D1").
+
+Once migration completes, the plan is to distribute `Uchinoko.bat` plus an
+embedded Python runtime (python.org embeddable build, with tkinter bundled)
+instead of the main executable (see `work\wp532A\DESIGN.md` for details). If
+you want to try the in-progress code directly today, the following works for
+development purposes only — it is not yet the confirmed build procedure for
+the distributable:
+
+```
+python app_py\main.py            # launch the GUI directly to check it works
+python app_py\build.py --fixture # prototype the bat + embedded-Python packaging
+```
+
+This section will be updated to replace Steps 1-2 themselves once the
+integration work package ("D1") actually switches the distribution path over.
 
 ### What is not yet verified (stated honestly)
 

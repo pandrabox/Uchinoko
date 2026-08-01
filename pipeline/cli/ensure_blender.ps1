@@ -391,6 +391,39 @@ try {
         }
     }
 
+    # --- パッチの動作検証(dev#577): 実際に import ooz が通ることを確認してから
+    #     マーカーを書く。従来はコピーの成否を検証せずに patched=true を書いており、
+    #     素材が壊れている/合わないケース(例: python311以外へフォワードする
+    #     python3.dllが同梱された v2.3.0 D1ビルド事故)でも「マーカーは有効なのに
+    #     実際は壊れている」矛盾状態のまま出荷後の変換本体で初めて
+    #     [pak_live_extract][FATAL] になっていた。ここで検証することで、
+    #     その矛盾状態を構造的に作れなくする(検証失敗=セットアップ失敗として
+    #     fail-closed。案内文 Show-D2PFailureGuidance が出る)。
+    #     -I(isolated): ホスト側のPYTHONPATH/ユーザーsite汚染で偽PASSしないため。
+    Write-D2PProgress 93 "Python環境の動作検証中 (import ooz)"
+    $importCheckOut = Join-Path $tmpExtractDir "ooz_import_check_stdout.txt"
+    $importCheckErr = Join-Path $tmpExtractDir "ooz_import_check_stderr.txt"
+    # 注意(PS5.1): Start-Processは-ArgumentListの各要素を素朴に空白連結するため、
+    # 空白を含む引数("import ooz")は自前でダブルクォートして渡す必要がある
+    # (しないと python -c import ooz と解釈され SyntaxError で常時FAILする。実測)。
+    $importCheckProc = Start-Process -FilePath $bpyExe.FullName `
+        -ArgumentList @("-I", "-c", "`"import ooz`"") `
+        -NoNewWindow -Wait -PassThru `
+        -RedirectStandardOutput $importCheckOut `
+        -RedirectStandardError $importCheckErr
+    if ($importCheckProc.ExitCode -ne 0) {
+        $errTail = ""
+        try {
+            $errLines = @(Get-Content $importCheckErr -ErrorAction SilentlyContinue | Select-Object -Last 5)
+            $errTail = ($errLines -join " / ")
+        } catch { }
+        Remove-Item $tmpExtractDir -Recurse -Force -ErrorAction SilentlyContinue
+        throw ("パッチ後の動作検証に失敗しました(Blender同梱Pythonで import ooz が通りません。" +
+               "exit=$($importCheckProc.ExitCode))。差し込み素材(assets\blender_patch\)が" +
+               "壊れているか、この環境と合っていない可能性があります。詳細: $errTail")
+    }
+    Write-Host "  検証OK: Blender同梱Pythonで import ooz が成功"
+
     # --- マーカー書き込み(移動前、展開先の一時ディレクトリ内で完成させる) ---
     $markerObj = [ordered]@{
         version        = $BlenderVersion

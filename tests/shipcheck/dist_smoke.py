@@ -12,10 +12,12 @@
      (PYTHONUTF8/PYTHONIOENCODINGをプロセス環境から除去し、convert.ps1
      自身が設定する2行だけに依存させる。これにより「他PCでだけ起きる」
      文字コード事故の再発を、今回はエンドツーエンドの実変換で確認する)。
-  4. 展開物**だけ**を使って(ランチャー廃止以降、`pipeline\\cli\\convert.ps1` /
-     `assets\\tools\\...\\blender.exe` /
-     `assets\\third_party\\...VRM_Addon...zip`。旧レイアウトの`_internal\\`は廃止済み)、
-     変換を1本完走する。
+  4. 展開物**だけ**を使って変換を1本完走する。レイアウトはdev#532方針A
+     (v2.3.0以降): zipルート=`Uchinoko_for_Palworld\\`直下は
+     **Uchinoko.bat / README.txt / res\\ の3点のみ**で、パイプライン一式は
+     `res\\pipeline\\cli\\convert.ps1` / `res\\assets\\tools\\...\\blender.exe` /
+     `res\\assets\\third_party\\...VRM_Addon...zip` のように`res\\`(=app_root)
+     配下に置かれる(旧レイアウトのルート直下`pipeline\\`等は廃止済み)。
      検体(vrm/fbx+humanoid.json)はリポジトリ側から読み取り専用で供給してよい
      (検体そのものはユーザーの手元にあるものの代替であり、配布物の一部ではない
      ため。実行コード・ツール類=配布物の中身、という区別)。
@@ -27,7 +29,8 @@
         [--job-template <job.jsonの雛形>] [--skip-cleanup] [--corrupt-for-negative-control <相対パス>]
 
 --corrupt-for-negative-control: 展開直後、指定した相対パス(展開ルート=
-    <extract_dir>\\Uchinoko_for_Palworld\\ からの相対)のファイルを削除してから変換を
+    <extract_dir>\\Uchinoko_for_Palworld\\ からの相対。方針Aレイアウトでは
+    例: res\\pipeline\\cli\\convert.ps1)のファイルを削除してから変換を
     試みる。負の対照用(必須ファイル欠落時にfail-closedすることを示す)。
 
 終了コード: 0=PASS(変換完走、pak生成確認)、1=FAIL(いずれかの工程で失敗)。
@@ -374,21 +377,29 @@ def main(argv=None):
         print("subst OK: {}:\\ -> {}".format(letter, extract_dir))
 
         x_stage_root = "{}:\\Uchinoko_for_Palworld".format(letter)
-        # 2026-07-31: ランチャー廃止に伴い配布レイアウトを
-        # フラット化した(_internal\という1階層の入れ子を廃止)。本体exe一式は
-        # 配布物ルート直下に直接置かれる。旧: internal_root = x_stage_root\_internal
-        internal_root = x_stage_root
-        convert_ps1 = os.path.join(internal_root, "pipeline", "cli", "convert.ps1")
+        # 2026-08-01(dev#532 方針A、v2.3.0): 配布レイアウトはzipルート直下
+        # Uchinoko.bat / README.txt / res\ の3点のみ(app_py\build.py::
+        # ALLOWED_ROOT_ENTRIES / verify_root_layout()と同一の定義)。
+        # パイプライン・アセット一式はres\(=app_root。ensure_blender.ps1の
+        # -AppRoot、app_py\main.py._resolve_app_root()が指す場所)配下へ移動した。
+        # 旧: internal_root = x_stage_root(2026-07-31フラット化時代)/
+        #     x_stage_root\_internal(ランチャー時代)——どちらも廃止済み。
+        app_root = os.path.join(x_stage_root, "res")
+        convert_ps1 = os.path.join(app_root, "pipeline", "cli", "convert.ps1")
         # u54: Blenderポータブル本体はもう展開物に含まれない(blender.exeの必須
         # チェックは撤去)。代わりにensure_blender.ps1本体と、それが使う差し込み
-        # 素材(assets\blender_patch\)が同梱されていることを見る。
-        ensure_blender_ps1 = os.path.join(internal_root, "pipeline", "cli", "ensure_blender.ps1")
-        vrm_addon_zip = os.path.join(internal_root, "assets", "third_party",
+        # 素材(res\assets\blender_patch\)が同梱されていることを見る。
+        ensure_blender_ps1 = os.path.join(app_root, "pipeline", "cli", "ensure_blender.ps1")
+        vrm_addon_zip = os.path.join(app_root, "assets", "third_party",
                                       "VRM_Addon_for_Blender-Extension-4_4_0.zip")
-        blender_patch_dir = os.path.join(internal_root, "assets", "blender_patch")
-        blender_exe = os.path.join(internal_root, "assets", "tools",
+        blender_patch_dir = os.path.join(app_root, "assets", "blender_patch")
+        blender_exe = os.path.join(app_root, "assets", "tools",
                                     "blender-4.3.2-windows-x64", "blender.exe")  # ensure_blender後の到達先
         for label, p in (
+            # 方針Aの入口2点(zipルート直下)。bat起動の実smoke自体はWSB関所の
+            # 担当だが、「エントリポイントが梱包されていること」はここで落とす。
+            ("Uchinoko.bat", os.path.join(x_stage_root, "Uchinoko.bat")),
+            ("README.txt", os.path.join(x_stage_root, "README.txt")),
             ("convert.ps1", convert_ps1),
             ("ensure_blender.ps1", ensure_blender_ps1),
             ("vrm_addon_zip", vrm_addon_zip),
@@ -404,7 +415,7 @@ def main(argv=None):
         # (通常の変換フローには進まない。実行するのはこの展開物自身のensure_blender.ps1)
         if args.ensure_blender_bad_url:
             rc = run_ensure_blender_negative_control(
-                ensure_blender_ps1, internal_root,
+                ensure_blender_ps1, app_root,
                 ["-DownloadUrlOverride",
                  "https://download.blender.org/release/Blender4.3/does-not-exist-negctrl.zip"],
                 report_path, "SourceZipなし+無効URL注入(4.6a)")
@@ -424,7 +435,7 @@ def main(argv=None):
                 f.seek(1000)
                 f.write(bytes([(b[0] + 1) % 256]))
             rc = run_ensure_blender_negative_control(
-                ensure_blender_ps1, internal_root, ["-SourceZip", corrupt_zip],
+                ensure_blender_ps1, app_root, ["-SourceZip", corrupt_zip],
                 report_path, "SourceZip改竄・SHA256不一致(4.6b)")
             ok = (rc == 0)
             return rc
@@ -438,7 +449,7 @@ def main(argv=None):
             print("FAIL: --blender-cache-zipが見つからない: {}".format(args.blender_cache_zip))
             return 1
         eb_rc, eb_out = run_ensure_blender(
-            ensure_blender_ps1, internal_root, ["-SourceZip", args.blender_cache_zip],
+            ensure_blender_ps1, app_root, ["-SourceZip", args.blender_cache_zip],
             report_path, "正常系(キャッシュzip使用)")
         if eb_rc != 0:
             print("FAIL: ensure_blender.ps1が失敗した(rc={})".format(eb_rc))

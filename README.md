@@ -166,7 +166,7 @@ Blenderポータブルはこの配布zipには同梱されず、ユーザーが�
 | 前提物 | 入手元 | 配置方法 |
 |---|---|---|
 | pyooz 0.0.8(`ooz.pyd`) | `pip install pyooz`、またはソースを同梱している `third_party\pyooz-0.0.8-source\pyooz-0.0.8.tar.gz` からビルド | Python 3.13 環境のユーザーsite-packages(`pip install`の既定出力先)に入っていれば自動検出されます |
-| python3.dll(Python 3.11、stable ABIリダイレクタ) | 公式サイト [python.org](https://www.python.org/downloads/release/python-3110/) からPython 3.11(64-bit)をインストール | 既定のインストール先に入っていれば自動検出されます。別の場所に置く場合は環境変数 `D2P_PYTHON311_DLL` にフルパスを設定する |
+| python3.dll(Python 3.11、stable ABIリダイレクタ) | 準備不要(ビルドが自動取得するembeddable Python 3.11.9に含まれるものを使用) | 自動。別のファイルを使う場合のみ環境変数 `D2P_PYTHON311_DLL` にフルパスを設定する(どの経路でも「フォワード先=python311」検証を通らないとビルドは失敗する) |
 
 他に .NET Framework 4.8(`csc.exe`。Windows 11に標準同梱)と PowerShell 7+(`pwsh`)が必要です。
 

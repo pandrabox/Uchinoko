@@ -93,6 +93,22 @@ VirusTotal へ提出しました。アイコンと製品風のアセンブリメ
   **この縮小後のビルドはまだリリースしておらず、VirusTotal へ改めて提出しても
   いないため、本日時点の正確な検出件数は言えません。**
 
+**進行中の抜本対策(dev#532、2026-08-01時点、まだ出荷していません)**:
+上記の推定原因(署名なし・`csc.exe`でビルドするたびに変わる .NET 実行ファイル
+という構造そのもの)に対する、対症療法ではない根本対応として、本体GUI
+(`app\DiveToPalworld.cs`)を Python(`app_py\`、tkinter)へ全面書き直しする
+作業を進めています。移行完了後の配布物は、自作コンパイル済みバイナリ
+(自作PE)を1つも含まない設計です(Python ソースはそのまま実行され、
+同梱する実行ファイルは python.org 公式配布の embeddable Python と、そこから
+抽出した Tcl/Tk ランタイムのみ。いずれも Python Software Foundation の
+Authenticode 署名を保持したまま同梱し、`packaging\check_signatures.py` が
+自作PEの混入をゲートとして機械検査します)。上記の対照実験は「`csc.exe`で
+ビルドした無害な空プログラムでも検出される」ことを示しており、この移行が
+完了すれば「`csc.exe`ビルド」という原因候補そのものが配布物から無くなる
+ため、検出状況の改善が期待できます。ただし**これは移行完了後の見込みであり、
+移行が完了し実際に配布・VirusTotalへ再提出して確認するまでは断定しません**
+(このセクションの他の記述と同じ姿勢を踏襲します)。
+
 **⚠ 重要: 上記4件はいずれもソースコードと CI ビルドには反映済みですが、
 現在配布中の最新リリース(v2.2.12)にはまだ反映されていません。** v2.2.12 は
 引き続き旧レイアウト(トップレベルの `Uchinoko.exe` ランチャー exe +
@@ -220,6 +236,24 @@ actually download today):**
   258,048-byte measurement above to roughly 233,000 bytes **when built from
   current source**. **We have not re-submitted this smaller build to
   VirusTotal, so we cannot state its exact detection count as of today.**
+
+**A more fundamental fix in progress (dev#532, as of 2026-08-01, not shipped
+yet)**: rather than treating symptoms of the suspected root cause above (an
+unsigned .NET executable whose structure changes on every `csc.exe` build),
+we are rewriting the main GUI (`app\DiveToPalworld.cs`) from scratch in
+Python (`app_py\`, tkinter). The planned distributable for the migrated
+version contains zero self-compiled binaries (self-made PE files): Python
+source runs as-is, and the only executables bundled are the official
+python.org embeddable Python build and the Tcl/Tk runtime extracted from it —
+both keeping their original Python Software Foundation Authenticode
+signature intact, with `packaging\check_signatures.py` gating the build
+against any self-made PE creeping in. Our controlled experiment above showed
+that even a harmless empty program built with `csc.exe` gets flagged, so
+removing "built with csc.exe" from the picture entirely is expected to help.
+That said, **this is a projection, not a proven result — we will only state
+detection numbers once this migration is complete, shipped, and resubmitted
+to VirusTotal**, consistent with how we've stated everything else in this
+section.
 
 **⚠ Important: all four changes above have landed in source and CI, but
 have not yet reached the currently downloadable release (v2.2.12).**

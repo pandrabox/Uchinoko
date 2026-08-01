@@ -131,6 +131,42 @@ def test_multiple_issues_sorted_by_number():
 
 
 # ---------------------------------------------------------------------------
+# dev#531: botホワイトリストの拡張(github-actions[bot]等を人間の声として
+# 誤検知しない)。ふうせん再発火事例(dev#452追補コメント)の負の対照。
+# ---------------------------------------------------------------------------
+
+def test_is_ai_authored_whitelist_includes_known_bots():
+    assert gh_inbox.is_ai_authored("github-actions[bot]", "") is True
+    assert gh_inbox.is_ai_authored("dependabot[bot]", "") is True
+    assert gh_inbox.is_ai_authored("osaki-claude[bot]", "") is True
+    assert gh_inbox.is_ai_authored("some_external_user", "") is False
+
+
+def test_last_comment_github_actions_bot_is_not_detected():
+    """最終コメントがgithub-actions[bot]なら人間の声として検出されない
+    (負の対照: dev#531以前はここが誤検出されていた)。"""
+    issues = [make_issue(1)]
+    comments = [
+        make_comment(101, 1, "pandrabox", "質問です", "2026-07-29T00:00:00Z"),
+        make_comment(102, 1, "github-actions[bot]", "CI完了通知", "2026-07-30T00:00:00Z"),
+    ]
+    items = gh_inbox.find_unanswered(issues, comments)
+    assert items == []
+
+
+def test_last_comment_pandrabox_is_detected_even_with_bot_whitelist_expanded():
+    """ホワイトリスト拡張後もpandraboxの最終発言は引き続き検出される
+    (対照: botだけが非検出になり、人間は依然として検出されることの確認)。"""
+    issues = [make_issue(1)]
+    comments = [
+        make_comment(101, 1, "github-actions[bot]", "CI完了通知", "2026-07-29T00:00:00Z"),
+        make_comment(102, 1, "pandrabox", "ありがとう、追加で質問です", "2026-07-30T00:00:00Z"),
+    ]
+    items = gh_inbox.find_unanswered(issues, comments)
+    assert [it["number"] for it in items] == [1]
+
+
+# ---------------------------------------------------------------------------
 # 負の対照: is_ai_authored を意図的に壊すとFAILすることを確認してから復元する
 # ---------------------------------------------------------------------------
 

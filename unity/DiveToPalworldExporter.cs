@@ -63,7 +63,25 @@ public static class DiveToPalworldExporter
     {
         string prefabPath = GetArg("-vrm2palPrefab");
         string outDir = GetArg("-vrm2palOut");
+
+        // dev#518診断: prefabパス解決の構造を成功/失敗にかかわらず必ずログへ残す。
+        // GUID未登録(=空文字列)ならインポート未完了を示唆、生バイトは全角/大文字
+        // 小文字の混入を機械的に見分けるため(問い合わせでは実物のprefabを
+        // 送ってもらえないので、ログだけで判別できる必要がある)
+        string guid = AssetDatabase.AssetPathToGUID(prefabPath);
+        Debug.Log("D2P: prefab解決 path=" + prefabPath +
+                  " guid=" + (string.IsNullOrEmpty(guid) ? "(空=GUID未登録)" : guid) +
+                  " rawBytes=" + BitConverter.ToString(Encoding.UTF8.GetBytes(prefabPath)));
+
         var prefab = AssetDatabase.LoadAssetAtPath<GameObject>(prefabPath);
+        if (prefab == null)
+        {
+            // 初回失敗時のみ: AssetDatabase.Refresh()で解消するかを記録して再試行する
+            Debug.LogWarning("D2P: prefabの初回読み込みに失敗。AssetDatabase.Refreshで再試行します: " + prefabPath);
+            AssetDatabase.Refresh();
+            prefab = AssetDatabase.LoadAssetAtPath<GameObject>(prefabPath);
+            Debug.Log("D2P: Refresh後の再試行結果: " + (prefab != null ? "成功(解消した)" : "失敗(解消しなかった)"));
+        }
         if (prefab == null) throw new Exception("prefabが読めない: " + prefabPath);
         Export(prefab, outDir);
         Debug.Log("D2P_EXPORT_DONE " + outDir);
@@ -316,6 +334,43 @@ public static class DiveToPalworldExporter
                    + "MeshRenderer/MeshFilter以外はすべて対象)");
     }
 
+    // D2P_COLLAPSE455_ESSENTIAL_BEGIN
+    // FBX輸出とhumanoid.json生成に真に必要な5型(Transform/Animator/
+    // SkinnedMeshRenderer/MeshRenderer/MeshFilter)かどうかの判定。
+    // StripNonEssentialPostBake(除去)とCollapseNestedArmatureContainers
+    // (収縮可否判定)の両方がこの1箇所を参照する(dev#455: 二重定義していた
+    // ことで、収縮判定側だけ古い「Transform以外禁止」基準のまま取り残され、
+    // Merge Armatureが生成するPhysBone付きアンカーノードがcollapse対象から
+    // 漏れてFBXに残存し、BlenderのFBXインポータでKeyErrorになっていた)。
+    static bool IsEssentialComponentType(Type t)
+    {
+        return t == typeof(Transform) || t == typeof(Animator)
+            || t == typeof(SkinnedMeshRenderer) || t == typeof(MeshRenderer)
+            || t == typeof(MeshFilter);
+    }
+
+    // 対象Transformが、Transform以外の「実データを保持する」必須型
+    // (Animator/SkinnedMeshRenderer/MeshRenderer/MeshFilter)を1つでも
+    // 持っているかどうか。GameObjectごと破棄する収縮(Collapse)では、
+    // こうしたデータ保持コンポーネントを道連れに失ってはならない。
+    // 一方、それ以外の型(VRCPhysBone/Collider/Constraint等)は
+    // StripNonEssentialPostBakeでどうせ後から除去される「使い捨て」
+    // コンポーネントなので、これを理由に収縮を諦める必要はない
+    // (dev#455の修正趣旨: 「どうせ後で消えるコンポーネント」を理由に
+    // 収縮を諦めない)。
+    static bool HasEssentialNonTransformComponent(Transform t)
+    {
+        foreach (var c in t.GetComponents<Component>())
+        {
+            if (c == null) continue;  // missing script等は道連れにしてよい(実データではない)
+            var ct = c.GetType();
+            if (ct == typeof(Transform)) continue;
+            if (IsEssentialComponentType(ct)) return true;
+        }
+        return false;
+    }
+    // D2P_COLLAPSE455_ESSENTIAL_END
+
     // 第2段(ベイク後)ホワイトリスト。ベイク・各種ボーン処理が全て終わった後、
     // FBX輸出とhumanoid.json生成に必要な5型(Transform/Animator/
     // SkinnedMeshRenderer/MeshRenderer/MeshFilter)以外のコンポーネントを
@@ -331,9 +386,7 @@ public static class DiveToPalworldExporter
         {
             if (c == null) continue;
             var t = c.GetType();
-            if (t == typeof(Transform) || t == typeof(Animator)
-                || t == typeof(SkinnedMeshRenderer) || t == typeof(MeshRenderer)
-                || t == typeof(MeshFilter))
+            if (IsEssentialComponentType(t))
                 continue;
             string typeName = t.FullName;
             string path = GetHierarchyPath(c.transform);
@@ -843,7 +896,17 @@ public static class DiveToPalworldExporter
     // ボーンがいる=ネストされたarmatureルート)を検出し、子を1段上へ直結して
     // コンテナ自体を消すことでボーンチェーンを途切れさせない。
     // ワールド座標は不変(worldPositionStays:trueで再親化するため見た目は無変化)。
-    // 安全のためTransform以外の成分を持つオブジェクトは対象から除外する
+    // 収縮可否の基準はStripNonEssentialPostBakeと同一の必須5型リストを参照する
+    // HasEssentialNonTransformComponentに統一する(dev#455)。この判定が走る時点
+    // (BakeNdmf後・StripNonEssentialPostBake前)では、Merge Armatureが揺れ物
+    // (PhysBone)付き装飾品のために生成するアンカーノードがまだVRCPhysBone等の
+    // コンポーネントを持ったままのため、「Transform以外は一切禁止」という
+    // 旧基準(コンポーネント数==1)では収縮対象から漏れ、FBXへ残存してBlender側で
+    // KeyErrorになっていた。新基準はTransform以外の実データ保持型(Animator/
+    // SkinnedMeshRenderer/MeshRenderer/MeshFilter)だけを収縮不可の理由にし、
+    // どうせ140行目のStripNonEssentialPostBakeで除去される型(PhysBone等)は
+    // 収縮を妨げない。
+    // D2P_COLLAPSE455_ALGO_BEGIN
     static void CollapseNestedArmatureContainers(GameObject root)
     {
         var bones = new HashSet<Transform>();
@@ -865,7 +928,7 @@ public static class DiveToPalworldExporter
             var t = all[i];
             if (t == root.transform) continue;
             if (bones.Contains(t)) continue;                   // 自身がボーンなら対象外
-            if (t.GetComponents<Component>().Length > 1) continue; // Transform以外を持つなら触らない
+            if (HasEssentialNonTransformComponent(t)) continue; // 実データ保持型(Animator/SkinnedMeshRenderer/MeshRenderer/MeshFilter)を持つなら触らない
             if (!HasAncestorBone(t, bones)) continue;          // ボーンチェーンの内部でなければ対象外
             if (!HasDescendantBone(t, bones)) continue;        // 子孫にボーンが無ければ対象外
 
@@ -903,6 +966,7 @@ public static class DiveToPalworldExporter
         }
         return false;
     }
+    // D2P_COLLAPSE455_ALGO_END
 
     // com.unity.formats.fbx の ModelExporter でベイク後の実体を1本のFBXへ。
     // パッケージ参照を増やさないためreflectionで呼ぶ。
@@ -989,6 +1053,10 @@ public static class DiveToPalworldExporter
     }
 
     // オプションオブジェクトのExportFormatをBinaryへ(4.x/5.xの実装差をまとめて吸収)
+    // dev#518: 生のreflection呼び出しをtry/catch無しで行うと内部でNREが起きた際に
+    // 無言のTargetInvocationExceptionとして落ち、診断不能になる(BakeNdmf/
+    // ExportUnifiedFbxのExportObject呼び出しと同じ轍)。同ファイル既存の
+    // catch (TargetInvocationException tie) パターンで保護する
     static bool SetFormatBinary(object opts)
     {
         const BindingFlags F = BindingFlags.Instance | BindingFlags.Public | BindingFlags.NonPublic;
@@ -997,19 +1065,43 @@ public static class DiveToPalworldExporter
             var m = t.GetMethod("SetExportFormat", F);
             if (m != null && m.GetParameters().Length == 1)
             {
-                m.Invoke(opts, new[] { EnumBinary(m.GetParameters()[0].ParameterType) });
+                try
+                {
+                    m.Invoke(opts, new[] { EnumBinary(m.GetParameters()[0].ParameterType) });
+                }
+                catch (TargetInvocationException tie)
+                {
+                    Debug.LogException(tie);
+                    throw new Exception(BuildInvocationFailureMessage("Binary出力オプション設定(SetExportFormat)", tie));
+                }
                 return true;
             }
             var p = t.GetProperty("ExportFormat", F);
             if (p != null && p.CanWrite && p.PropertyType.IsEnum)
             {
-                p.SetValue(opts, EnumBinary(p.PropertyType), null);
+                try
+                {
+                    p.SetValue(opts, EnumBinary(p.PropertyType), null);
+                }
+                catch (TargetInvocationException tie)
+                {
+                    Debug.LogException(tie);
+                    throw new Exception(BuildInvocationFailureMessage("Binary出力オプション設定(ExportFormatプロパティ)", tie));
+                }
                 return true;
             }
             var f = t.GetField("exportFormat", F);
             if (f != null && f.FieldType.IsEnum)
             {
-                f.SetValue(opts, EnumBinary(f.FieldType));
+                try
+                {
+                    f.SetValue(opts, EnumBinary(f.FieldType));
+                }
+                catch (TargetInvocationException tie)
+                {
+                    Debug.LogException(tie);
+                    throw new Exception(BuildInvocationFailureMessage("Binary出力オプション設定(exportFormatフィールド)", tie));
+                }
                 return true;
             }
         }
@@ -1017,6 +1109,7 @@ public static class DiveToPalworldExporter
     }
 
     // オプションオブジェクトの任意設定をsetterメソッド/プロパティ/フィールドの順で試す
+    // dev#518: SetFormatBinaryと同様の理由でTargetInvocationExceptionを保護する
     static bool TrySetOption(object opts, string setterName, string propName,
                              string fieldName, object value)
     {
@@ -1026,19 +1119,43 @@ public static class DiveToPalworldExporter
             var m = t.GetMethod(setterName, F);
             if (m != null && m.GetParameters().Length == 1)
             {
-                m.Invoke(opts, new[] { value });
+                try
+                {
+                    m.Invoke(opts, new[] { value });
+                }
+                catch (TargetInvocationException tie)
+                {
+                    Debug.LogException(tie);
+                    throw new Exception(BuildInvocationFailureMessage("オプション設定(" + setterName + ")", tie));
+                }
                 return true;
             }
             var p = t.GetProperty(propName, F);
             if (p != null && p.CanWrite)
             {
-                p.SetValue(opts, value, null);
+                try
+                {
+                    p.SetValue(opts, value, null);
+                }
+                catch (TargetInvocationException tie)
+                {
+                    Debug.LogException(tie);
+                    throw new Exception(BuildInvocationFailureMessage("オプション設定(" + propName + ")", tie));
+                }
                 return true;
             }
             var f = t.GetField(fieldName, F);
             if (f != null)
             {
-                f.SetValue(opts, value);
+                try
+                {
+                    f.SetValue(opts, value);
+                }
+                catch (TargetInvocationException tie)
+                {
+                    Debug.LogException(tie);
+                    throw new Exception(BuildInvocationFailureMessage("オプション設定(" + fieldName + ")", tie));
+                }
                 return true;
             }
         }

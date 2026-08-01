@@ -1,38 +1,42 @@
 # -*- coding: utf-8 -*-
-"""WP11(2026-07-27): GUI配線契約テスト。
+"""WP11(2026-07-27)発, dev#532 方針A WP-C2(2026-08-01)で全面書換: GUI配線契約テスト。
 
-背景: リリースゲート群(devtools\\release.py / ship_smoke.py)は完成しているが、
-GUI(app\\DiveToPalworld.cs)の「フル変換」ボタンが実際に行う
+## 背景(WP11時点、旧版)
+リリースゲート群(devtools\\release.py / ship_smoke.py)は完成しているが、
+GUIの「フル変換」ボタンが実際に行う
     job.json生成(WriteJob) -> convert.ps1起動(BuildConvertScriptPath/BuildConvertArgs/FindPwsh)
 という配線そのものは誰も検証していなかった。ship_smoke.pyのA3は「GUIが起動して
 3.5秒落ちない」ことしか見ておらず、job.jsonの中身やconvert.ps1の起動コマンドは
 一切見ていない。2026-07-26のcp932事故はまさにこの「GUI経由の起動」が引き金だった
 (GUIがconvert.ps1をリダイレクト付きで起動する状況特有の不具合)。
 
-クリック自動化はこの環境では実行できない(WP6 T6で確認済み)ため、
-「実際にGUIが使うのと同じメソッドを、画面を出さずに直接呼んで結果をファイルへ
-書き出す」ヘッドレス契約テストで代替する。
+旧版はクリック自動化が使えない制約から、C#実装(app\\DiveToPalworld.cs)に
+`--emit-wiring`隠しCLIを追加し、csc.exeでビルドしたexeを起動して結果をファイルへ
+書き出させる方式を取っていた。
 
-## テスト対象にした変更(app\\DiveToPalworld.cs、追加のみ)
-1. `BuildConvertScriptPath()` / `BuildConvertArgs()` — RunPipeline()に元々あった
-   convert.ps1のパス解決・引数組み立てのロジックをそのままメソッドへ切り出した
-   (戻り値・動作は不変。RunPipeline側は切り出したメソッドを呼ぶよう2行だけ変更)。
-2. `EmitWiring(outDir, repoRoot)` / `--emit-wiring <outDir> <repoRoot>` 隠しCLIモード
-   — WriteJob() / BuildConvertScriptPath() / BuildConvertArgs() / FindPwsh() という
-   実際にGUIが「フル変換」時に呼ぶのと同じメソッドを呼び出し、結果(job.jsonと
-   起動コマンドライン)をファイルへ書き出して終了する。convert.ps1は起動しない。
-   通常起動(Main()の引数なし経路)の動作は変えていない。
+## dev#532 方針A(GUI本体をtkinter/Pythonへ全面移植)後のこの版
+GUI本体が `app_py\\pipeline_runner.py`(WP-A2、dev#532)へ移植されたことで、
+「実際にGUIが呼ぶのと同じ関数」を**ビルドもCLI起動も経由せず直接import**して
+呼べるようになった(DESIGN.md §0-1「Pythonへ移植すれば、ビルド→exe起動という
+手順自体が丸ごと不要になる。これは移行のコストではなくボーナス」のとおり)。
+検査対象は `pipeline_runner.write_job()` / `build_convert_script_path()` /
+`build_convert_args()` / `find_pwsh()`(§2.1相当)。
 
 ## このスクリプトが検査すること
   a. job.jsonのスキーマ・必須キー(REQUIRED_TOP_KEYS / REQUIRED_PATHS_KEYS、根拠は
      下記「必須キーの根拠」)が欠けていないこと(値は検体依存で可)。
+  a2. `engine_mode` が明示的に `"noue"` であること(dev#532 A2発進指示での裁定の
+      固定化。旧C#実装のWriteJob()にはこのキーが無く、convert.ps1側のデフォルト
+      採用で実害を吸収していたドリフトだったが〈DESIGN.md §2.1/§6-1〉、
+      Python移植版(pipeline_runner.ENGINE_MODE)では明示的に書くと決まった)。
   b. 起動コマンドが実在する pipeline\\cli\\convert.ps1 を正しい絶対パスで指し、
      -File / -Job 引数が正しく渡っていること。
-  c. 環境変数契約(PYTHONIOENCODING=utf-8 / PYTHONUTF8=1): GUI側のソースが
-     これらの変数を明示的にセット/上書きしていない(=convert.ps1の自己設定を
-     阻害していない)こと、かつconvert.ps1側が実際にこの2行を無条件(コメント
-     アウトされていない)で持っていること。責務分担の根拠は
-     `check_env_contract()` のdocstring参照。
+  c. 環境変数契約(PYTHONIOENCODING=utf-8 / PYTHONUTF8=1): `pipeline_runner.py`が
+     これらの変数をos.environ経由で明示的にセット/上書きしていない(=convert.ps1
+     の自己設定を阻害していない)こと、`subprocess.Popen`が`env=None`(親環境を
+     そのまま継承)で子プロセスを起動する契約を保っていること、かつconvert.ps1側が
+     実際にこの2行を無条件(コメントアウトされていない)で持っていること。
+     責務分担の根拠は `check_env_contract()` のdocstring参照。
 
 ## 必須キーの根拠
 - `pipeline\\cli\\convert.ps1` 冒頭のコメント(8行目):
@@ -42,16 +46,25 @@ GUI(app\\DiveToPalworld.cs)の「フル変換」ボタンが実際に行う
 - `pipeline\\blender\\vp_bl.py::ensure_vrm_addon()` が
   `job["paths"].get("vrm_addon_zip")` を読む(VRMアドオン導入に必須)。
 - `avatar_name` はconvert.ps1側にフォールバック既定があるが
-  (`$Avatar = if ($cfg.avatar_name) {...} else {"Avatar"}`)、GUIが常に
-  明示出力する設計になっている(`WriteJob()`)ため、GUIの契約としては必須キー
-  として扱う(欠落=WriteJob()の退行を示すため)。
-- dev#114(2026-07-29): UEパイプライン完全削除に伴い `engine_mode` /
-  `paths.ue_project` / `paths.ue_root` はWriteJob()が書かなくなった
-  (convert.ps1は常にnoue専用。job.jsonにengine_modeが無くても既定noueで動く)。
-  必須キー・負の対照からもこの3キーの扱いを除去した。
+  (`$Avatar = if ($cfg.avatar_name) {...} else {"Avatar"}`)、GUI(pipeline_runner.
+  write_job)が常に明示出力する設計になっているため、GUIの契約としては必須キー
+  として扱う(欠落=write_job()の退行を示すため)。
+- dev#114(2026-07-29): UEパイプライン完全削除に伴い `paths.ue_project` /
+  `paths.ue_root` はGUIが書かなくなった(convert.ps1は常にnoue専用)。
+  `engine_mode`自体はdev#532 A2裁定で明示キーへ復活したためa2で別途検査する
+  (REQUIRED_TOP_KEYSには含めない。値の中身まで固定するのはa2の役割にする設計
+  分離)。
 - `pipeline\\job.example.json`(CLI直接利用者向けの公式サンプル)も同じ
   `vrm_path` / `avatar_name` / `paths.blender_exe` / `paths.vrm_addon_zip` の
   組を必須級として提示している。
+
+## mutation test(負の対照)の方式変更
+旧版はC#ソース一式をコピーしてcsc.exeで再ビルドしていたが、Python移植後は
+ビルド手順自体が不要になった(上記docstring参照)。本版は
+`app_py\\pipeline_runner.py`(+同居する`i18n.py`/`i18n_data.json`/`settings.py`、
+importに要る依存のみ)を一時ディレクトリへコピーし、コピーしたソースへ文字列
+置換で変異を注入したうえで `importlib` 経由でモジュールとしてimportする。
+**リポジトリ本体(`app_py\\`配下)は一切書き換えない。**
 
 ## 使い方
     python tests\\shipcheck\\gui_wiring_check.py [--work <dir>]
@@ -59,51 +72,54 @@ GUI(app\\DiveToPalworld.cs)の「フル変換」ボタンが実際に行う
     python tests\\shipcheck\\gui_wiring_check.py --mutate broken_path   # 負の対照
 
 --work省略時は `work\\relgate\\wp11\\gui_wiring_check_<timestamp>\\`
-(このWPの書き込み許可域の外へは出さない設計。ship_smoke.py組み込み時
- (gate_a8_gui_wiring)もこの既定を使い、ship_smoke.py自身の--workは無視する
- ——detail参照)。
+(ship_smoke.py組み込み時(gate_a8_gui_wiring)もこの既定を使い、ship_smoke.py自身の
+--workは無視する——detail参照。この呼び出しインターフェース(`run_check(work_dir,
+mutation_key=None)`が`.ok`/`.render()`を持つResultを返す、`default_work_root()`)は
+WP-C1(ship_smoke.py)側の依存契約なので変更していない)。
 
 終了コード: 全項目PASSなら0、1つでもFAILなら1。fail-closed
-(ビルド失敗・emit失敗・キー欠落は全て赤)。
+(import失敗・emit失敗・キー欠落は全て赤)。
 """
 import argparse
 import datetime
+import importlib.util
 import json
 import os
 import re
 import shutil
-import subprocess
 import sys
 import time
 import traceback
 
 HERE = os.path.dirname(os.path.abspath(__file__))
 REPO_ROOT = os.path.dirname(os.path.dirname(HERE))
-APP_DIR = os.path.join(REPO_ROOT, "app")
-PIPELINE_DIR = os.path.join(REPO_ROOT, "pipeline")
+APP_PY_DIR = os.path.join(REPO_ROOT, "app_py")
 CONVERT_PS1_REL = os.path.join("pipeline", "cli", "convert.ps1")
 
 REQUIRED_TOP_KEYS = ["vrm_path", "avatar_name", "paths"]
 REQUIRED_PATHS_KEYS = ["blender_exe", "vrm_addon_zip"]
+EXPECTED_ENGINE_MODE = "noue"
 
-# 負の対照用の変異定義。app\DiveToPalworld.cs本体は変異させず、work配下に
-# コピーしたソースツリーに対してのみ適用する(禁則: 本体ソースの変異)。
+# importのために一緒にコピーする必要がある同居モジュール(pipeline_runner.py
+# 自身のsys.path.insert(0, 自分のディレクトリ)がこれらを解決する対象)。
+_SIDECAR_FILES = ("i18n.py", "i18n_data.json", "settings.py")
+
+# 負の対照用の変異定義。app_py\pipeline_runner.py本体は変異させず、work配下に
+# コピーしたファイルに対してのみ適用する(禁則: 本体ソースの変異)。
 MUTATIONS = {
     "missing_key": {
-        "desc": "job.jsonの必須キー(avatar_name)を書かせない変異(WriteJob内の1行を削除)",
-        "find": (
-            '            sb.AppendFormat("  \\"avatar_name\\": \\"{0}\\",\\n", name);\n'
-        ),
+        "desc": "job.jsonの必須キー(avatar_name)を書かせない変異(write_job内の1行を削除)",
+        "find": '        "avatar_name": name,\n',
         "replace": "",
     },
     "broken_path": {
-        "desc": "convert.ps1のパスを壊す変異(BuildConvertScriptPathが別ファイル名を指すようにする)",
+        "desc": "convert.ps1のパスを壊す変異(build_convert_script_pathが別ファイル名を指すようにする)",
         "find": (
-            '            return Path.Combine(appRoot, "pipeline", "cli", "convert.ps1");\n'
+            '    return os.path.join(app_root, "pipeline", "cli", "convert.ps1")\n'
         ),
         "replace": (
-            '            return Path.Combine(appRoot, "pipeline", "cli", '
-            '"convert_BROKEN_PATH_NEGATIVE_CONTROL.ps1");\n'
+            '    return os.path.join(app_root, "pipeline", "cli", '
+            '"convert_BROKEN_PATH_NEGATIVE_CONTROL.ps1")\n'
         ),
     },
 }
@@ -142,113 +158,57 @@ def _indent(text, prefix="    "):
     return "\n".join(prefix + l for l in (text or "").splitlines())
 
 
-# --- ソース準備(通常/負の対照) --------------------------------------------------
+# --- pipeline_runnerモジュールの用意(通常/負の対照) -----------------------------
 
-def _prepare_source_tree(work_dir, mutation_key=None):
-    """検査対象のソース一式を work_dir\\src_under_test へ用意する。
+def _load_pipeline_runner(work_dir, mutation_key=None):
+    """検査対象の pipeline_runner モジュールをロードして返す。
 
-    mutation_key が None なら本体(REPO_ROOT)をそのまま使う(コピーせず参照)。
-    mutation_key が指定されていれば、必要最小限のファイル
-    (app\\DiveToPalworld.cs, app\\build_app.ps1, ico\\favicon.ico(あれば),
-    pipeline\\cli\\convert.ps1)だけを work_dir\\src_under_test へコピーし、
-    DiveToPalworld.cs にだけ変異を適用する。本体ソース(REPO_ROOT配下)は
+    mutation_key が None なら app_py\\pipeline_runner.py を直接import(変異なし)。
+    mutation_key が指定されていれば、work_dir\\src_under_test_<key>\\ へ
+    pipeline_runner.py + 同居モジュール一式をコピーし、pipeline_runner.py にだけ
+    文字列置換で変異を適用してから importlib 経由でロードする。app_py\\本体は
     一切書き換えない。
-    戻り値: (source_root, note)
+    戻り値: (module, note)
     """
     if mutation_key is None:
-        return REPO_ROOT, "本体ソース(REPO_ROOT)を直接使用(変異なし)"
+        if APP_PY_DIR not in sys.path:
+            sys.path.insert(0, APP_PY_DIR)
+        import pipeline_runner  # type: ignore
+        return pipeline_runner, "本体(app_py\\pipeline_runner.py)を直接import(変異なし)"
 
     if mutation_key not in MUTATIONS:
         raise ValueError("未知のmutation_key: {}".format(mutation_key))
-    # 2026-07-31以降、app\build_app.ps1 は DiveToPalworld.cs と
-    # 同じディレクトリの AssemblyInfo.cs(アセンブリメタデータ)を前提にビルドする。
-    # 2026-08-01(dev#523)以降は同様に app.manifest(asInvokerマニフェスト)も
-    # 前提になった(無いとbuild_app.ps1がWrite-Errorで停止する)。
-    # ここで最小構成をコピーしているため、これらも一緒に持ち込まないとビルド自体が
-    # 失敗する(下のコピー処理を参照)。
 
     src_root = os.path.join(work_dir, "src_under_test_" + mutation_key)
     if os.path.isdir(src_root):
         shutil.rmtree(src_root)
-    os.makedirs(os.path.join(src_root, "app"), exist_ok=True)
-    os.makedirs(os.path.join(src_root, "pipeline", "cli"), exist_ok=True)
-    os.makedirs(os.path.join(src_root, "ico"), exist_ok=True)
-    os.makedirs(os.path.join(src_root, "third_party"), exist_ok=True)
+    os.makedirs(src_root, exist_ok=True)
 
-    cs_src = os.path.join(APP_DIR, "DiveToPalworld.cs")
-    with open(cs_src, encoding="utf-8") as f:
-        cs_text = f.read()
+    for fn in _SIDECAR_FILES:
+        shutil.copy2(os.path.join(APP_PY_DIR, fn), os.path.join(src_root, fn))
+
+    pr_src_path = os.path.join(APP_PY_DIR, "pipeline_runner.py")
+    with open(pr_src_path, encoding="utf-8") as f:
+        pr_text = f.read()
     mut = MUTATIONS[mutation_key]
-    if mut["find"] not in cs_text:
+    if mut["find"] not in pr_text:
         raise RuntimeError(
             "変異対象の文字列が現行ソースに見つからない(ソース側の変更で"
             "ズレた可能性): {!r}".format(mut["find"][:120]))
-    mutated_text = cs_text.replace(mut["find"], mut["replace"], 1)
-    if mutated_text == cs_text:
+    mutated_text = pr_text.replace(mut["find"], mut["replace"], 1)
+    if mutated_text == pr_text:
         raise RuntimeError("変異が適用されなかった(置換前後で同一)")
-    with open(os.path.join(src_root, "app", "DiveToPalworld.cs"), "w", encoding="utf-8") as f:
+
+    mutated_path = os.path.join(src_root, "pipeline_runner.py")
+    with open(mutated_path, "w", encoding="utf-8") as f:
         f.write(mutated_text)
 
-    shutil.copy2(os.path.join(APP_DIR, "build_app.ps1"),
-                 os.path.join(src_root, "app", "build_app.ps1"))
-    shutil.copy2(os.path.join(APP_DIR, "AssemblyInfo.cs"),
-                 os.path.join(src_root, "app", "AssemblyInfo.cs"))
-    shutil.copy2(os.path.join(APP_DIR, "app.manifest"),
-                 os.path.join(src_root, "app", "app.manifest"))
-    icon_src = os.path.join(REPO_ROOT, "ico", "favicon.ico")
-    if os.path.isfile(icon_src):
-        shutil.copy2(icon_src, os.path.join(src_root, "ico", "favicon.ico"))
-    shutil.copy2(os.path.join(PIPELINE_DIR, "cli", "convert.ps1"),
-                 os.path.join(src_root, "pipeline", "cli", "convert.ps1"))
-
-    # WriteJob()はVRMアドオンzipをFindFirst()で実ファイル検索し(見つからなければ
-    # null)、その結果をJ()(nullを想定していない.Replace呼び出し)へそのまま渡す。
-    # 変異検査の対象はmissing_key/broken_pathの2種だけであり、この副作用
-    # (フィクスチャ不足によるNullReferenceException)で検査が本来見たい箇所より
-    # 手前で落ちてしまわないよう、本体のVRMアドオンzipを読み取り専用でコピーする
-    # (このNull安全性自体は本WPのスコープ外の既存挙動なので、ここで補うだけで
-    # app\DiveToPalworld.cs側は一切変更しない)。
-    for fn in os.listdir(os.path.join(REPO_ROOT, "third_party")):
-        if fn.startswith("VRM_Addon_for_Blender-Extension") and fn.endswith(".zip"):
-            shutil.copy2(os.path.join(REPO_ROOT, "third_party", fn),
-                         os.path.join(src_root, "third_party", fn))
-            break
-
-    return src_root, "変異適用: {} ({})".format(mutation_key, mut["desc"])
-
-
-# --- ビルド・emit実行 ----------------------------------------------------------
-
-def _build_exe(source_root, build_dir):
-    build_ps1 = os.path.join(source_root, "app", "build_app.ps1")
-    out_exe = os.path.join(build_dir, "DiveToPalworld_wiring_check.exe")
-    os.makedirs(build_dir, exist_ok=True)
-    proc = subprocess.run(
-        ["pwsh", "-NoProfile", "-File", build_ps1, "-Out", out_exe],
-        cwd=source_root, capture_output=True, text=True, encoding="utf-8",
-        errors="replace", timeout=120,
-    )
-    ok = proc.returncode == 0 and os.path.isfile(out_exe)
-    detail = "rc={}\n{}".format(proc.returncode, _tail(proc.stdout + proc.stderr, 3000))
-    return ok, out_exe, detail
-
-
-def _run_emit(exe_path, out_dir, repo_root_for_app):
-    if os.path.isdir(out_dir):
-        shutil.rmtree(out_dir)
-    os.makedirs(out_dir, exist_ok=True)
-    try:
-        proc = subprocess.run(
-            [exe_path, "--emit-wiring", out_dir, repo_root_for_app],
-            capture_output=True, text=True, encoding="utf-8", errors="replace",
-            timeout=60,
-        )
-    except Exception:
-        return False, "実行例外:\n" + traceback.format_exc()
-    ok = proc.returncode == 0 and "EMIT_WIRING_OK" in (proc.stdout or "")
-    detail = "rc={} stdout={!r} stderr={!r}".format(
-        proc.returncode, _tail(proc.stdout, 1000), _tail(proc.stderr, 1000))
-    return ok, detail
+    mod_name = "gui_wiring_check_mutant_{}_{}".format(mutation_key, id(work_dir))
+    spec = importlib.util.spec_from_file_location(mod_name, mutated_path)
+    module = importlib.util.module_from_spec(spec)
+    sys.modules[mod_name] = module
+    spec.loader.exec_module(module)  # type: ignore[union-attr]
+    return module, "変異適用: {} ({})".format(mutation_key, mut["desc"])
 
 
 # --- (a) job.jsonスキーマ検査 ---------------------------------------------------
@@ -277,6 +237,17 @@ def check_job_schema(job):
     return ok, detail
 
 
+def check_engine_mode(job):
+    """dev#532 A2裁定の固定化: engine_modeが明示的に'noue'であること。
+    戻り値: (ok, detail)"""
+    value = job.get("engine_mode")
+    ok = value == EXPECTED_ENGINE_MODE
+    detail = ("OK: engine_mode={!r}".format(value) if ok else
+              "engine_modeが期待値と不一致(欠落含む): 実際={!r} 期待={!r}".format(
+                  value, EXPECTED_ENGINE_MODE))
+    return ok, detail
+
+
 # --- (b) 起動コマンド検査 -------------------------------------------------------
 
 _ARGS_RE = re.compile(
@@ -284,13 +255,15 @@ _ARGS_RE = re.compile(
 )
 
 
-def check_launch_command(wiring, expected_convert_ps1, job_json_path):
+def check_launch_command(script, shell, args, expected_convert_ps1, job_json_path):
     """起動コマンドが実在するconvert.ps1を正しいパスで指し、-File/-Jobが
-    正しく渡っていることを検査する。戻り値: (ok, detail)"""
+    正しく渡っていることを検査する。戻り値: (ok, detail)
+
+    expected_convert_ps1は検査対象モジュールを一切経由せず、このテスト自身が
+    REPO_ROOTから独立に組み立てた期待値(build_convert_script_pathの結果を
+    そのまま期待値に使うと、broken_path変異のような自己欺瞞的なPASSを生む)。
+    """
     problems = []
-    script = wiring.get("script", "")
-    shell = wiring.get("shell", "")
-    args = wiring.get("args", "")
 
     norm_script = os.path.normcase(os.path.abspath(script))
     norm_expected = os.path.normcase(os.path.abspath(expected_convert_ps1))
@@ -325,36 +298,46 @@ _ENV_ASSIGN_RE = {
     "PYTHONIOENCODING": re.compile(r'\$env:PYTHONIOENCODING\s*=\s*"([^"]*)"'),
     "PYTHONUTF8": re.compile(r'\$env:PYTHONUTF8\s*=\s*"([^"]*)"'),
 }
+_OS_ENVIRON_ASSIGN_RE = re.compile(
+    r'os\.environ\[\s*["\'](PYTHONIOENCODING|PYTHONUTF8)["\']\s*\]\s*='
+)
 
 
-def check_env_contract(app_cs_path, convert_ps1_path):
+def check_env_contract(pipeline_runner_path, convert_ps1_path):
     """PYTHONIOENCODING=utf-8 / PYTHONUTF8=1 の責務分担契約を検査する。
 
     設計: convert.ps1が自分の子プロセス全部に効くよう冒頭で無条件に
     `$env:PYTHONIOENCODING = "utf-8"` / `$env:PYTHONUTF8 = "1"` を設定する
     (2026-07-26 cp932事故の修正、ship_smoke.py A6が実行時の効果を別途検証済み)。
-    GUI(app\\DiveToPalworld.cs)はconvert.ps1を子プロセスとして起動する側であり、
-    ProcessStartInfo.EnvironmentVariablesを一切触っていない(=現在の実装は
-    親プロセスの環境をそのまま継承させるだけで、convert.ps1がその後自分の
-    プロセス内で`$env:...=`する値を上書き・阻害する余地が構造的に無い)。
-    したがってこのゲートが守るのは「GUI側のソースがこの2変数を明示指定して
-    convert.ps1の自己設定と競合する上書きをしていないこと」+「convert.ps1側が
-    実際にこの2行を(コメントアウトせず)持っていること」の両輪。
-    どちらか片方が崩れても検出できる。
+    pipeline_runner.py(旧GUI側)はconvert.ps1を子プロセスとして起動する側であり、
+    `subprocess.Popen(..., env=None)`で親プロセスの環境をそのまま継承させるだけで、
+    convert.ps1がその後自分のプロセス内で`$env:...=`する値を上書き・阻害する
+    余地が構造的に無い設計(旧C#実装のProcessStartInfo.EnvironmentVariables
+    無操作方針を1:1で踏襲)。したがってこのゲートが守るのは
+    「pipeline_runner.py側がこの2変数をos.environ経由で明示指定して
+    convert.ps1の自己設定と競合する上書きをしていないこと」+
+    「Popen呼び出しがenv=Noneで契約どおり親環境を継承していること」+
+    「convert.ps1側が実際にこの2行を(コメントアウトせず)持っていること」の
+    三点。どれか1つが崩れても検出できる。
     戻り値: (ok, detail)
     """
     problems = []
     try:
-        with open(app_cs_path, encoding="utf-8") as f:
-            cs_text = f.read()
+        with open(pipeline_runner_path, encoding="utf-8") as f:
+            py_text = f.read()
     except Exception as e:
-        return False, "DiveToPalworld.cs読み込み失敗: {}".format(e)
+        return False, "pipeline_runner.py読み込み失敗: {}".format(e)
 
-    if ".EnvironmentVariables[" in cs_text:
+    if _OS_ENVIRON_ASSIGN_RE.search(py_text):
         problems.append(
-            "GUI側がProcessStartInfo.EnvironmentVariables[...]を明示操作している形跡がある。"
-            "PYTHONIOENCODING/PYTHONUTF8をconvert.ps1の設定と食い違う値で上書きしていないか"
-            "個別に確認すること(現行設計は無関与のはずで、これが出たら退行の疑い)。")
+            "pipeline_runner.py側がos.environ[...]でPYTHONIOENCODING/PYTHONUTF8を"
+            "明示操作している形跡がある。convert.ps1の自己設定と食い違う値で"
+            "上書きしていないか個別に確認すること(現行設計は無関与のはずで、"
+            "これが出たら退行の疑い)。")
+    if "env=None" not in py_text:
+        problems.append(
+            "subprocess.Popen(..., env=None)相当の記述が見当たらない"
+            "(親環境をそのまま継承する契約が崩れている可能性)。")
 
     try:
         with open(convert_ps1_path, encoding="utf-8") as f:
@@ -386,51 +369,61 @@ def run_check(work_dir, mutation_key=None):
     os.makedirs(work_dir, exist_ok=True)
 
     try:
-        source_root, note = _prepare_source_tree(work_dir, mutation_key)
-        r.add("0_source_prepared", True, note)
+        module, note = _load_pipeline_runner(work_dir, mutation_key)
+        r.add("0_module_loaded", True, note)
     except Exception:
-        r.add("0_source_prepared", False, traceback.format_exc())
-        return r
-
-    build_dir = os.path.join(work_dir, "build")
-    build_ok, exe_path, build_detail = _build_exe(source_root, build_dir)
-    r.add("1_build", build_ok, build_detail)
-    if not build_ok:
+        r.add("0_module_loaded", False, traceback.format_exc())
         return r
 
     emit_dir = os.path.join(work_dir, "emit_out")
-    emit_ok, emit_detail = _run_emit(exe_path, emit_dir, source_root)
-    r.add("2_emit_wiring_run", emit_ok, emit_detail)
-    if not emit_ok:
+    if os.path.isdir(emit_dir):
+        shutil.rmtree(emit_dir)
+    os.makedirs(emit_dir, exist_ok=True)
+    work_root = os.path.join(emit_dir, "work")
+    os.makedirs(work_root, exist_ok=True)
+
+    # write_job()はファイル実在を要求しない(ファイル名からavatar_nameを作る
+    # だけ)ため、空ファイルのフィクスチャで足りる。
+    fixture_vrm = os.path.join(emit_dir, "FixtureAvatar.vrm")
+    with open(fixture_vrm, "wb"):
+        pass
+
+    try:
+        job_json_path = module.write_job(REPO_ROOT, work_root, fixture_vrm)
+        r.add("1_write_job", True, "job.json: {}".format(job_json_path))
+    except Exception:
+        r.add("1_write_job", False, traceback.format_exc())
         return r
 
-    wiring_path = os.path.join(emit_dir, "wiring.json")
-    job_path = os.path.join(emit_dir, "job.json")
     try:
-        with open(wiring_path, encoding="utf-8") as f:
-            wiring = json.load(f)
-        r.add("3_wiring_json_readable", True)
-    except Exception:
-        r.add("3_wiring_json_readable", False, traceback.format_exc())
-        return r
-    try:
-        with open(job_path, encoding="utf-8") as f:
+        with open(job_json_path, encoding="utf-8") as f:
             job = json.load(f)
-        r.add("4_job_json_readable", True)
+        r.add("2_job_json_readable", True)
     except Exception:
-        r.add("4_job_json_readable", False, traceback.format_exc())
+        r.add("2_job_json_readable", False, traceback.format_exc())
         return r
 
     ok, detail = check_job_schema(job)
     r.add("a_job_schema", ok, detail)
 
-    expected_convert_ps1 = os.path.join(source_root, CONVERT_PS1_REL)
-    job_json_real_path = wiring.get("job_json_path", job_path)
-    ok, detail = check_launch_command(wiring, expected_convert_ps1, job_json_real_path)
+    ok, detail = check_engine_mode(job)
+    r.add("a2_engine_mode_noue", ok, detail)
+
+    try:
+        script = module.build_convert_script_path(REPO_ROOT)
+        args = module.build_convert_args(script, job_json_path)
+        shell = module.find_pwsh()
+        r.add("3_build_launch_command", True,
+              "script={} shell={} args={}".format(script, shell, args))
+    except Exception:
+        r.add("3_build_launch_command", False, traceback.format_exc())
+        return r
+
+    expected_convert_ps1 = os.path.join(REPO_ROOT, CONVERT_PS1_REL)
+    ok, detail = check_launch_command(script, shell, args, expected_convert_ps1, job_json_path)
     r.add("b_launch_command", ok, detail)
 
-    app_cs_path = os.path.join(source_root, "app", "DiveToPalworld.cs")
-    ok, detail = check_env_contract(app_cs_path, expected_convert_ps1)
+    ok, detail = check_env_contract(module.__file__, expected_convert_ps1)
     r.add("c_env_contract", ok, detail)
 
     return r

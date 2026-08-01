@@ -33,8 +33,15 @@ import pytest
 
 REPO_ROOT = Path(__file__).resolve().parent.parent.parent
 CS_PATH = "app/DiveToPalworld.cs"
+# dev#532 D1(2026-08-01): バージョンの単一情報源をC#資産からapp_py側へ移行した
+# (release.py.stamp_tool_version()/read_tool_version()参照)。過去のタグは
+# CS_PATH側が正の情報源、D1以降の新しいタグはPY_PATH側が正の情報源になる
+# ため、このテストは「どちらか一方が一致していればOK」という移行期対応の
+# 判定にした(過去のタグを書き換えず、未来のタグにも追従できる)。
+PY_PATH = "app_py/ui/main_window.py"
 TAG_VERSION_RE = re.compile(r"^v\d+\.\d+\.\d+$")
 TOOLVERSION_RE = re.compile(r'const\s+string\s+ToolVersion\s*=\s*"([^"]+)"')
+PY_TOOLVERSION_RE = re.compile(r'TOOL_VERSION\s*=\s*"([^"]+)"')
 
 
 def _git(args, cwd):
@@ -43,11 +50,22 @@ def _git(args, cwd):
     )
 
 
+def _read_version_at_tag(repo_root, tag, path, pattern):
+    show = _git(["show", "{}:{}".format(tag, path)], repo_root)
+    if show.returncode != 0:
+        return None
+    m = pattern.search(show.stdout)
+    return m.group(1) if m else None
+
+
 def find_mismatched_version_tags(repo_root):
     """repo_root内の全 vX.Y.Z 形式タグについて、そのタグが指すコミットの
-    app/DiveToPalworld.cs内 ToolVersion がタグ名と一致するかを確認する。
-    不一致(または定数が見つからない/ファイルが無い)の (tag, actual_value) の
-    リストを返す。ToolVersion定数が見つからない場合の actual_value は None。
+    バージョン定数(app/DiveToPalworld.cs の ToolVersion、または
+    app_py/ui/main_window.py の TOOL_VERSION のいずれか)がタグ名と一致するかを
+    確認する。dev#532 D1でスタンプ先がC#資産からapp_py側へ移った移行期対応の
+    ため、**どちらか一方でも一致すればOK**とする(両方とも不一致/不在の場合のみ
+    問題として報告する)。不一致の (tag, actual_cs_value, actual_py_value) の
+    リストを返す。
     """
     r = _git(["tag", "--list"], repo_root)
     assert r.returncode == 0, "git tag --list failed: {}".format(r.stderr)
@@ -55,14 +73,11 @@ def find_mismatched_version_tags(repo_root):
 
     mismatches = []
     for tag in tags:
-        show = _git(["show", "{}:{}".format(tag, CS_PATH)], repo_root)
-        if show.returncode != 0:
-            mismatches.append((tag, None))
+        actual_cs = _read_version_at_tag(repo_root, tag, CS_PATH, TOOLVERSION_RE)
+        actual_py = _read_version_at_tag(repo_root, tag, PY_PATH, PY_TOOLVERSION_RE)
+        if actual_cs == tag or actual_py == tag:
             continue
-        m = TOOLVERSION_RE.search(show.stdout)
-        actual = m.group(1) if m else None
-        if actual != tag:
-            mismatches.append((tag, actual))
+        mismatches.append((tag, actual_cs, actual_py))
     return mismatches
 
 
@@ -126,10 +141,11 @@ def test_checker_detects_frozen_version_regression(tmp_git_repo):
         assert r.returncode == 0, r.stderr
 
     mismatches = find_mismatched_version_tags(tmp_git_repo)
-    mismatched_tags = sorted(t for t, _ in mismatches)
+    mismatched_tags = sorted(t for t, _cs, _py in mismatches)
     assert mismatched_tags == ["v2.0.1", "v2.1.0", "v2.2.0"], mismatches
-    for tag, actual in mismatches:
-        assert actual == "v2.0.0", (tag, actual)
+    for tag, actual_cs, actual_py in mismatches:
+        assert actual_cs == "v2.0.0", (tag, actual_cs, actual_py)
+        assert actual_py is None, (tag, actual_cs, actual_py)
 
 
 def test_checker_passes_when_each_tag_is_correctly_stamped(tmp_git_repo):
@@ -150,3 +166,57 @@ def test_checker_passes_when_each_tag_is_correctly_stamped(tmp_git_repo):
         assert r.returncode == 0, r.stderr
 
     assert find_mismatched_version_tags(tmp_git_repo) == []
+
+
+# --- 受入ゲート3: dev#532 D1移行後(app_py側スタンプ)の正/負の対照 ------------------
+# release.py.stamp_tool_version()が今後stampするのはPY_PATH側であり、CS_PATH側は
+# もう更新されない。移行後のタグはPY_PATH側だけが一致していればOK(=CS_PATHは
+# 過去の値のまま凍結されていて構わない)ことを確認する。
+
+def _write_py(repo_dir, version):
+    ui_dir = repo_dir / "app_py" / "ui"
+    ui_dir.mkdir(parents=True, exist_ok=True)
+    (ui_dir / "main_window.py").write_text(
+        'TOOL_VERSION = "{}"\n'.format(version), encoding="utf-8"
+    )
+
+
+def test_checker_passes_when_only_py_side_is_stamped_after_migration(tmp_git_repo):
+    """正の対照(dev#532 D1後の実運用形): CS_PATHは一度も存在しない/更新されない
+    リポジトリでも、PY_PATH側だけが正しくタグ名と一致していれば問題なしと判定する。"""
+    _init_repo(tmp_git_repo)
+    _write_py(tmp_git_repo, "v2.3.0")
+    _commit_all(tmp_git_repo, "init (py-only, post-migration)")
+    r = _git(["tag", "v2.3.0"], tmp_git_repo)
+    assert r.returncode == 0, r.stderr
+
+    for version in ("v2.3.1", "v2.4.0"):
+        _write_py(tmp_git_repo, version)
+        _commit_all(tmp_git_repo, "bump to {}".format(version))
+        r = _git(["tag", version], tmp_git_repo)
+        assert r.returncode == 0, r.stderr
+
+    assert find_mismatched_version_tags(tmp_git_repo) == []
+
+
+def test_checker_still_detects_frozen_py_version_regression(tmp_git_repo):
+    """負の対照: PY_PATH側運用へ移行した後も、「タグだけ進んでTOOL_VERSIONが
+    凍結されたまま」という同種のバグ(dev#532 D1がまさに再発防止しようとしている
+    もの)は引き続き検出できること。CS_PATHが存在しない(=CS側でも一致しえない)
+    ケースであることが重要。"""
+    _init_repo(tmp_git_repo)
+    _write_py(tmp_git_repo, "v2.3.0")
+    _commit_all(tmp_git_repo, "init (py-only)")
+    r = _git(["tag", "v2.3.0"], tmp_git_repo)
+    assert r.returncode == 0, r.stderr
+
+    for stale_tag in ("v2.3.1", "v2.4.0"):
+        r = _git(["tag", stale_tag], tmp_git_repo)
+        assert r.returncode == 0, r.stderr
+
+    mismatches = find_mismatched_version_tags(tmp_git_repo)
+    mismatched_tags = sorted(t for t, _cs, _py in mismatches)
+    assert mismatched_tags == ["v2.3.1", "v2.4.0"], mismatches
+    for tag, actual_cs, actual_py in mismatches:
+        assert actual_cs is None, (tag, actual_cs, actual_py)
+        assert actual_py == "v2.3.0", (tag, actual_cs, actual_py)

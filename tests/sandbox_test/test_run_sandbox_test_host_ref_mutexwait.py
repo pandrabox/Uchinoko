@@ -55,14 +55,15 @@ def _assert_mutex_wait_ms_present(cmd, expected_value):
 
 def _make_zip(zip_path):
     """build_host_reference_pak()が要求するファイルだけを最小構成で持つ
-    ダミーzip(Uchinoko.exeが直下にあるパターン)。
+    ダミーzip(Uchinoko.batが直下にあるパターン)。
 
-    2026-07-31: ランチャー廃止で_internal\が廃止され、rootが
-    そのままapp_root(=本体の配置先)になった。フラット構成に追随させた。"""
+    dev#532 D1(2026-08-01): 方針A(Python/tkinter版)統合でzip直下は
+    Uchinoko.bat/README.txt/res\\ の3点のみになり、pipeline\\/assets\\は
+    res\\配下(=app_root)へ移動した(app_py\\build.py参照)。"""
     with zipfile.ZipFile(zip_path, "w") as zf:
-        zf.writestr("Uchinoko.exe", b"stub")
-        zf.writestr("pipeline/cli/convert.ps1", "# stub, never executed (subprocess.run is mocked)")
-        zf.writestr("assets/third_party/VRM_Addon_for_Blender-Extension-4_4_0.zip", b"stub")
+        zf.writestr("Uchinoko.bat", b"stub")
+        zf.writestr("res/pipeline/cli/convert.ps1", "# stub, never executed (subprocess.run is mocked)")
+        zf.writestr("res/assets/third_party/VRM_Addon_for_Blender-Extension-4_4_0.zip", b"stub")
 
 
 def _setup_common(tmp_path, monkeypatch):

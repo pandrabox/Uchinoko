@@ -21,6 +21,11 @@
 work/
 # Blenderポータブル(約1GB、公式サイトから再取得できる。再生成可能)
 tools/
+# dev#532 D1: `python app_py\main.py` を開発チェックアウトで直接実行すると
+# app_root(=リポジトリ直下)に faulthandler.log 等の実行時ログが生成される
+# (main.py._enable_faulthandler、パッケージ版ではres\logs\へ生成される想定と
+# 同じappRoot直下規約)。再生成可能・恒常データではないため追跡しない。
+/logs/
 
 # --- 生成物・キャッシュ(再生成可能) ---
 *.pyc

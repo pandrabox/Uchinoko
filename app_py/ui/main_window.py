@@ -1,0 +1,2037 @@
+# main_window.py -- MainWindow(旧 app\DiveToPalworld.cs の MainForm 相当)の骨格。
+#
+# dev#532 方針A WP-A1: DESIGN.md(C:\P\Work\DiveToPalworld\work\wp532A\DESIGN.md)
+# §1.1 の全25画面要素を配置するだけの「骨格」。イベントハンドラは全部stubで、
+# クリックしても実処理はせず、ログ欄へ「未実装」と出すだけ(_stub()参照)。
+# 実処理の結線はWP-A2〜A6が担当する(DESIGN.md §5.2)。
+#
+# レイアウトはDESIGN.md §4.2の方針どおり絶対座標(tkinterのplace())を踏襲する。
+# 座標値はDiveToPalworld.csコンストラクタ(L.903-1306)のLeft/Top/Width実測値を
+# 転記したもの(convertButton幅などC#側で実測フォント幅により動的に変わる値は
+# 固定近似値へ寄せている)。指揮者裁定により本WP(基盤)では見た目の作り込みは
+# 求められていない(「見た目チープ容認」)ため、pixel-perfect一致は狙っていない。
+#
+# 依存モジュールの解決: このファイルは `python app_py\main.py` から
+# `from ui.main_window import MainWindow` の形でimportされる想定で、main.pyが
+# 先に app_py ディレクトリを sys.path へ入れるため、ここでは素朴に
+# `import i18n` / `import settings` の絶対importで足りる(相対importは
+# main.pyを直接スクリプト実行する受入条件①と相性が悪いため使わない)。
+#
+# dev#532 方針A WP-A2(2026-08-01): 変換系ハンドラの結線。convertButton/
+# cancelButton/matsButton/previewButtonをpipeline_runner.py(WriteJob/
+# BuildConvertArgs/FindPwsh/RunPipeline相当)へ実配線する。書き込み許可
+# (DESIGN.md §5.2 WP-A2行)は「main_window.pyの該当ハンドラ部分のみ」のため、
+# ウィジェット生成(_build_widgets)自体はWP-A1のまま変更していない
+# (コマンド差し替え1行+ハンドラメソッド追加のみ)。
+# browse/D&D経由のSetVrm本体(セッションログ復元・以前のjob.json設定復元)は
+# 「変換系」の外側(WP-A1の骨格が持たない未実装領域)であり、本WPでは
+# 「vrmBoxへパスを入れて変換を開始できる状態にする」最小限のみ扱う
+# 〈合理的解釈〉。prefab選択時のRunUnityExport起動はconvertButton系の
+# 前段としてWP-A2で結線し、完了後にそのまま同じ最小SetVrmへ引き継ぐ。
+#
+# dev#532 方針A WP-A8(2026-08-02): D&D(#4)の実配線。ui\dnd.py(ctypes+
+# Win32 API自前実装、外部バイナリ非同梱)をrootウィンドウ全体へ
+# インストールする(app\DiveToPalworld.csのAllowDrop=trueがForm全体に
+# 掛かっているのと同じ範囲、L.946-948)。受理拡張子・複数ファイル時の
+# 挙動(先頭1件のみ判定)はdnd.pick_dropped_path()が持ち、本ファイルは
+# 採用/不採用後の分岐(prefabならUnity輸出、それ以外はSetVrm)だけを持つ。
+
+from __future__ import annotations
+
+import json
+import os
+import platform
+import queue
+import re
+import sys
+import threading
+import time
+import tkinter as tk
+import webbrowser
+from datetime import datetime
+from tkinter import messagebox, ttk
+from typing import Optional
+
+_APP_PY_DIR = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+if _APP_PY_DIR not in sys.path:
+    sys.path.insert(0, _APP_PY_DIR)
+
+import blender_setup  # noqa: E402
+import compat_check  # noqa: E402
+import dist_channel  # noqa: E402
+import i18n  # noqa: E402
+import inquiry  # noqa: E402
+import pak_manager  # noqa: E402
+import path_health  # noqa: E402
+import pipeline_runner  # noqa: E402
+import settings  # noqa: E402
+import update_check  # noqa: E402
+import warm_startup  # noqa: E402
+from ui import dnd  # noqa: E402
+from ui import support_dialog  # noqa: E402
+
+# DiveToPalworld.cs L.704 (devtools\release.py がリリース時にスタンプする値。
+# WP-A1の骨格では固定値で近似し、実際の版管理はB1/D1側の課題とする)
+TOOL_VERSION = "v2.3.1"
+
+# オンラインマニュアルのURL(指揮者裁定: マニュアルを開く導線があれば既定
+# ブラウザで開く)。DESIGN.md §1.1の25要素にはマニュアル専用ボタンは含まれて
+# いない(現行app\DiveToPalworld.csにも該当ボタンは存在しない、grep実測で
+# 確認済み)ため、本WPでは新規ボタンを追加していない。URL定数だけ、他WPが
+# ボタンを追加する時にすぐ使えるよう用意しておく
+# (公開先: manual\manual.html / manual\manual.en.html、README.mdのリンク参照)。
+MANUAL_URL = "https://pandrabox.github.io/DiveToPalworld/manual/manual.html"
+
+
+def _load_scaled_preview_image(path: str, max_width: int, max_height: int) -> tk.PhotoImage:
+    """dev#599: previewFront/previewSide用のPNGをtk.PhotoImageで読み込み、
+    表示域(max_width x max_height)に収まるよう整数間引き(subsample)で
+    縮小して返す。Pillow/ImageTk等の追加依存は使わない(同梱ランタイム
+    res\\python_embedにPillowが無いため、Tk 8.6ネイティブのPNGデコードのみ
+    に依存する設計、C#版のLoadImageNoLock+PictureBoxSizeMode.Zoom相当を
+    tkinterの手段で再現したもの)。
+
+    失敗時(ファイル無し・壊れPNG・Tk側のTclError等)は例外をそのまま呼び出し
+    元へ伝播させる(フォールバック処理は呼び出し元の責務、_set_preview_widget
+    参照)。
+
+    subsampleは整数倍率でしか縮小できない(非整数倍率や拡大はできない)ため、
+    「表示域に収まる」ことを保証する最小の整数倍率を切り上げ計算で求める。
+    例: 700x1000のPNGを380x360の表示域に収める場合、
+    ceil(700/380)=2, ceil(1000/360)=3 → 大きい方の3を採用し233x333になる。
+    """
+    img = tk.PhotoImage(file=path)
+    width, height = img.width(), img.height()
+    if width <= 0 or height <= 0:
+        raise ValueError(f"invalid image dimensions: {width}x{height}")
+    factor = 1
+    if max_width > 0 and width > max_width:
+        factor = max(factor, -(-width // max_width))  # ceil division
+    if max_height > 0 and height > max_height:
+        factor = max(factor, -(-height // max_height))  # ceil division
+    if factor > 1:
+        img = img.subsample(factor, factor)
+    return img
+
+
+class _ToolTip:
+    """簡易ツールチップ(DiveToPalworld.csのToolTip.SetToolTip相当の最小実装)。
+    tkinterに標準のツールチップ機構が無いための自前実装。i18n.register()の
+    setter経由で言語切替時にも文言が更新される。"""
+
+    def __init__(self, widget: tk.Widget):
+        self.widget = widget
+        self.text = ""
+        self._tip: tk.Toplevel | None = None
+        widget.bind("<Enter>", self._show, add="+")
+        widget.bind("<Leave>", self._hide, add="+")
+        widget.bind("<Destroy>", self._hide, add="+")
+
+    def set_text(self, text: str) -> None:
+        self.text = text
+
+    def _show(self, _event=None) -> None:
+        if not self.text or self._tip is not None:
+            return
+        try:
+            x = self.widget.winfo_rootx() + 12
+            y = self.widget.winfo_rooty() + self.widget.winfo_height() + 6
+        except tk.TclError:
+            return
+        self._tip = tk.Toplevel(self.widget)
+        self._tip.wm_overrideredirect(True)
+        try:
+            self._tip.wm_geometry(f"+{x}+{y}")
+        except tk.TclError:
+            pass
+        label = tk.Label(
+            self._tip, text=self.text, background="#ffffe0",
+            relief="solid", borderwidth=1, padx=4, pady=2, justify="left",
+        )
+        label.pack()
+
+    def _hide(self, _event=None) -> None:
+        if self._tip is not None:
+            try:
+                self._tip.destroy()
+            except tk.TclError:
+                pass
+            self._tip = None
+
+
+class MainWindow:
+    """旧MainForm相当。DESIGN.md §1.1の全25要素をplace()で配置する。
+
+    `self.widgets` は各要素をDESIGN.md §1.1の行番号順に名前で引けるようにした
+    lookup簿(受入条件③用)。C#の元フィールド名(vrmBox/convertButton等)を
+    そのままキーに使い、DESIGN.mdとの対応を追いやすくしてある。
+    """
+
+    def __init__(self, root: tk.Tk, app_root: str | None = None):
+        self.root = root
+        self.app_root = app_root or _APP_PY_DIR
+        self.work_root = self._resolve_work_root()
+        self.widgets: dict[str, object] = {}
+        self._tooltips: list[_ToolTip] = []
+
+        # ---- WP-A2: 変換系の内部状態 ----
+        # DiveToPalworld.cs L.1042-1046「内部互換性のためにフィールドを初期化
+        # (UIには表示しない)」相当。WP-A1骨格にも対応する可視ウィジェットが
+        # 無いため、pipeline_runner.write_job()の既定値と同じ初期値をここに持つ
+        # (将来、以前のjob.jsonからの復元(SetVrm相当)を実装するWPがこの3つの
+        # 属性を上書きすればよい設計にしてある)。
+        self._shoulder_offset_deg = 0
+        self._merge_fingers = False
+        self._unlit = False
+        self._force_two_sided = True
+        # EnsureLicenseConfirmed() L.2533-2545相当のセッション内フラグ
+        # (アバターごとのjob.json復元によるリセットはSetVrm側の担当、WP-A2外)
+        self._license_confirmed = False
+        # dev#611: silentPreview(DiveToPalworld.cs L.472/2556)相当。自動起動時
+        # (アバター登録直後の自動プレビュー)はTrue、手押し(previewButton等)
+        # はFalse。現時点の_on_pipeline_exit()には完了ダイアログが無い
+        # (PR #610が別途追加予定)ため、このフラグは導入・設定のみ行い、
+        # まだどこからも参照しない(brief item2の指示どおり)。
+        self._silent_preview = False
+        self._active_handle: pipeline_runner.ProcessHandle | None = None
+        self._pipeline_warnings: list[str] = []
+        # dev#288提案2(早期プレビュー反映)相当。実行のたびFalseへ戻す
+        # (_start_pipeline側、earlyPreviewLoadedThisRun L.483相当)。
+        self._early_preview_loaded_this_run = False
+        # dev#599: previewFront/previewSideへ表示中のtk.PhotoImageへの参照を
+        # ここに保持する(Tkの罠対策。Label.config(image=...)はTk内部では
+        # 弱参照のみ持つため、Python側の変数が無くなるとGCで画像が消える)。
+        self._preview_images: dict[str, tk.PhotoImage] = {}
+
+        # pak管理系(WP-A4、DESIGN.md §2.3)の内部状態。
+        # _paks_dir_cache: PaksDir()のインスタンスキャッシュ相当(paksDirCache)。
+        # _pak_paths: TreeviewのiidからpakフルパスへのlookupPakList.Items[].Tag相当)。
+        # _pak_candidates: identify_applied_pak()に渡す(pakパス, アバター名)列
+        # (UpdateAppliedStatusがpakList走査から作る材料と同じ)。
+        # _applied_status_gen: 世代番号(古い照合結果を捨てるための世代、appliedStatusGen相当)。
+        self._paks_dir_cache: str | None = None
+        self._pak_paths: dict[str, str] = {}
+        self._pak_candidates: list[tuple[str, str]] = []
+        self._applied_status_gen = 0
+
+        # dev#618/#619結線: 起動時診断系の内部状態。
+        # _remote_known_good_json: dev#89相当。update_check.check_for_update()が
+        # versions.jsonから拾った"palworld_known_good"ブロック(JSON文字列)を
+        # ここへキャッシュし、compat_check側の判定にも使う(C#のvolatile
+        # remoteKnownGoodJsonフィールド相当。取得前/失敗時/オフライン時はNoneの
+        # まま=同梱データのみで判定、安全に縮退)。
+        self._remote_known_good_json: str | None = None
+        # _pending_update_version: ShowUpdateNotice()のpendingUpdateVersion相当。
+        # 現時点では言語切替時の再表示(dev#173相当)は本WPのスコープ外だが、
+        # C#と同じ変数を保持しておく(将来の結線が迷わないよう合わせておく)。
+        self._pending_update_version: str | None = None
+
+        # Blender準備状態(DESIGN.md §2.2、WP-A3)。C#側の blenderSetupRunning/
+        # blenderReady フィールド(コンストラクタ近傍で宣言)相当。
+        self._blender_setup_running = False
+        self._blender_ready = False
+        self._blender_queue: "queue.Queue[tuple]" = queue.Queue()
+
+        # 初期言語決定(DetermineInitialLang L.817-831相当。dev#532方針A
+        # WP-A11/dev#549でOSロケール自動判定を結線。設定ファイルがあれば
+        # 最優先、無ければ i18n.detect_lang_from_culture() でOSのUI言語から
+        # 判定する。旧WP-A1骨格の「無ければja固定」簡略実装は、日本語環境
+        # 以外のユーザーが初回起動時に常にja表示になる回帰リスクがあった
+        # ため置き換えた〈WP-A7調査(dev#549)で発見、報告済みの解消〉)。
+        code = settings.load_language_code(self.app_root)
+        if code and code in i18n.FILE_CODE_TO_LANG:
+            lang = i18n.FILE_CODE_TO_LANG[code]
+        else:
+            lang = i18n.detect_lang_from_culture(self._current_os_culture_name())
+        i18n.clear_registry()
+        i18n.set_language(lang)
+
+        root.title(f"Uchinoko for Palworld {TOOL_VERSION} - {i18n.S('TitleSubtitle')}")
+        root.geometry("1100x930")
+        self._set_window_icon()
+
+        # 問い合わせダイアログ(#21)の可変状態(SupportDialogState相当)。
+        # アプリ実行中はダイアログを閉じても引き継がれる必要があるため、
+        # MainWindowが1個だけ保持する(support_dialog.pyのdocstring参照)。
+        self._support_state = support_dialog.SupportDialogState()
+
+        self._build_widgets()
+        self._update_window_title()
+        self._drop_target: dnd.DropTarget | None = None
+        self._setup_drag_and_drop()
+
+        # RefreshPakList()相当(DiveToPalworld.cs L.899, L.1260)。起動直後に
+        # 一覧+適用中判定を populate する(§1.2 #26/#18、WP-A4の結線対象)。
+        self._on_refresh_pak_list()
+
+        # Shownデリゲート(DiveToPalworld.cs L.1258-1271)のうち「最後に開いていた
+        # VRMを復帰(設定・プレビューも一緒に戻る)」部分(dev#623)。RefreshPakList
+        # の直後という順序もC#版どおり。
+        self._restore_last_vrm_on_startup()
+
+        # dev#532 D1: 起動時セルフチェック(path_health.py、§1.2 #31相当+
+        # 「環境隔離4層」の④)。同期・軽量(ディスクI/O無しのパス比較のみ)
+        # なのでUIスレッドで直接呼んでよい。
+        self._run_startup_self_check()
+
+        # dev#532 D1: 他MOD検出(CheckOtherModsOnce()相当、§1.2 #30)。
+        # ディスクI/O(Paksフォルダ列挙)を伴うため専用バックグラウンドスレッドへ。
+        self._check_other_mods_once()
+
+        # dev#620: パス健全性警告(CheckPathHealthOnStartup()相当、§1.2 #31)。
+        # 文字列比較のみ(ディスクI/O無し)なのでUIスレッドで直接呼んでよい
+        # (_run_startup_self_checkと同じ扱い)。
+        self._check_path_health_on_startup()
+
+        # dev#618: Palworldバージョン互換チェック(CheckPalworldVersionOnce()
+        # 相当、§1.2 #29)。ディスクI/O(acf読み取り・pakサイズ取得・
+        # warm-cache完了待ちの最大5分ポーリング)を伴うため専用バックグラウンド
+        # スレッドへ(元実装と同じ設計)。
+        self._check_palworld_version_once()
+
+        # dev#619: 起動時更新通知(CheckForUpdateOnStartup()相当、§1.2 #23)。
+        # ネットワークI/O(versions.jsonのGET、タイムアウト4秒)を伴うため
+        # 専用バックグラウンドスレッドへ(元実装と同じくThreadPool相当)。
+        self._check_for_update_once()
+
+        # Shownイベント相当(DESIGN.md §1.2 #28)のうちBlender準備のみ、本WPで
+        # 起動直後に非同期発火する(#26/27/29-32の他の起動時処理はA4/A6等の
+        # 担当、DESIGN.md §5.2参照)。tkinterのafter()でポーリングを開始してから
+        # ワーカースレッドを起こす(DESIGN.md §4.3の定番パターン)。
+        self.root.after(100, self._poll_blender_queue)
+        self._ensure_blender_ready_on_startup()
+
+    # -- 内部ヘルパー -----------------------------------------------------
+
+    def _set_window_icon(self) -> None:
+        """dev#594: py版GUIのウィンドウ/タスクバーアイコンがPython既定の
+        ままだった件の解消。旧C#版(app\\)がbuild_app.ps1でexeへ埋め込んで
+        いた製品アイコン(ぱん納品、リポジトリ直下 ico\\app.ico、
+        git 5d28cda「icon: 新アイコンへ全面置き換え」)と同じ資産を、
+        build.py側のres\\へのコピー処理を新設せず、既存の`_copy_app_sources()`
+        (app_py\\ツリー全体をres\\app\\へそのままコピーする経路)に相乗りさせる
+        形で app_py\\assets\\app.ico として同梱する。このファイル冒頭の
+        `_APP_PY_DIR`(dev実行ではapp_py\\、配布実行ではres\\app\\を指す、
+        既に両対応済みの定数)からの相対パスで解決するため、開発実行/配布
+        実行のどちらでも同じコードで見つかる。
+        `root.iconbitmap(default=...)` の `default=` はこのrootから生成される
+        子Toplevel(問い合わせダイアログ等)にもアイコンを継承させるための
+        指定。失敗(環境依存のTk実装差異等)しても例外を握って続行し、
+        アイコンのためにGUI起動自体を止めない(仕様#3)。"""
+        icon_path = os.path.join(_APP_PY_DIR, "assets", "app.ico")
+        try:
+            self.root.iconbitmap(default=icon_path)
+        except Exception:  # noqa: BLE001 -- アイコン設定の失敗でGUIを殺さない
+            pass
+
+    def _resolve_work_root(self) -> str:
+        """WorkRootResolveLogic.Resolve(DiveToPalworld.cs L.6446-)相当の最小版。
+        appRoot\\work への書き込みを試し、失敗すれば%LOCALAPPDATA%\\Uchinoko\\work
+        へフォールバックする(DESIGN.md §2.8「外部依存パスの原則」の三点セット
+        のうち①②のみ。探索過程の詳細ログ・パス健全性診断はpath_health.py
+        (WP-A6、DESIGN.md §4.1)の担当のため、本WPでは足りる分だけの簡略版
+        〈合理的解釈〉)。"""
+        primary = os.path.join(self.app_root, "work")
+        try:
+            os.makedirs(primary, exist_ok=True)
+            probe = os.path.join(primary, ".d2p_write_probe")
+            with open(probe, "w", encoding="utf-8") as f:
+                f.write("")
+            os.remove(probe)
+            return primary
+        except OSError:
+            pass
+        fallback = os.path.join(
+            os.environ.get("LOCALAPPDATA", os.path.expanduser("~")), "Uchinoko", "work"
+        )
+        os.makedirs(fallback, exist_ok=True)
+        return fallback
+
+    def _current_os_culture_name(self) -> str | None:
+        """CultureInfo.CurrentUICulture.Name相当(L.830で渡される実際の値)。
+        i18n.detect_lang_from_culture()は文字列入力のみに依存する純関数なので、
+        「実際のOS言語をどう取得するか」という環境依存部分はここに切り出す
+        (DetermineInitialLangがMainForm側でCultureInfoへ直接アクセスしていた
+        のと同じ役割分担、DESIGN.md §4.4参照)。取得できなければNone
+        (detect_lang_from_cultureはNone/空文字をenへ倒す設計)。"""
+        try:
+            import ctypes
+
+            windll = getattr(ctypes, "windll", None)
+            if windll is not None:
+                lcid = windll.kernel32.GetUserDefaultUILanguage()
+                import locale as _locale
+
+                name = _locale.windows_locale.get(lcid)
+                if name:
+                    return name.replace("_", "-")
+        except Exception:
+            pass
+        try:
+            import locale as _locale
+
+            loc = _locale.getdefaultlocale()[0]
+            if loc:
+                return loc.replace("_", "-")
+        except Exception:
+            pass
+        return None
+
+    def _restore_last_vrm_on_startup(self) -> None:
+        """Shownデリゲート(DiveToPalworld.cs L.1258-1271)のうち以下の部分相当
+        (dev#623):
+        ```
+        string f = LastVrmFile();
+        if (File.Exists(f)) {
+            string last = File.ReadAllText(f, Encoding.UTF8).Trim();
+            if (File.Exists(last)) SetVrm(last);
+        }
+        ```
+        settings_lastvrm.txtに記録があり、かつそのファイルがまだ実在する時
+        だけ、通常の_set_vrm_path経路(browse/D&Dと同じ入口)へそのまま流す
+        (job.json復元・自動プレビュー判定も同じ経路で効く。C#版もSetVrm(last)
+        を呼ぶだけで別処理を持たない、L.1268)。ファイルが既に無ければ何も
+        しない(File.Exists(last)相当)。例外はtry/catch(Exception) L.1262/1271
+        と同じくGUI起動自体を止めずに握る。"""
+        try:
+            last_vrm = settings.load_last_vrm(self.app_root)
+            if last_vrm and os.path.isfile(last_vrm):
+                self._set_vrm_path(last_vrm)
+        except Exception as ex:  # noqa: BLE001 -- L.1262/1271相当、GUI起動を止めない
+            self._log(f"[startup] last vrm restore failed: {ex}")
+
+    def _run_startup_self_check(self) -> None:
+        """dev#532 D1: 起動時セルフチェック(path_health.check_runtime_environment
+        相当)の結線。判定対象は「実行中のPythonインタプリタが app_root 配下の
+        同梱embeddable Pythonか」。
+
+        パッケージ版(`Uchinoko.bat`経由起動、app_root配下に`python_embed\\`が
+        存在する)でのみ検査を実行する。開発ソースチェックアウトでの
+        `python app_py\\main.py` 直接実行(受入条件①)では`python_embed\\`が
+        存在しないため何もしない(=判定対象外。path_health.pyのdocstring
+        「情報が渡ってこないケースは黙って動く安全側」の精神を、パッケージ版
+        かどうかの判定自体にも適用した合理的解釈。理由: app_root=リポジトリ
+        直下となる開発実行では、システムPythonがapp_root配下に無いのは常態で
+        あり、これを毎回「エラー」として警告するのは誤検知になる)。"""
+        if not os.path.isdir(os.path.join(self.app_root, "python_embed")):
+            return
+        status = path_health.check_runtime_environment(sys.executable, self.app_root)
+        message = path_health.runtime_environment_message(status)
+        if message:
+            self._log(f"[self-check] {message} (sys.executable={sys.executable})")
+            messagebox.showwarning("Uchinoko for Palworld", message)
+
+    def _check_other_mods_once(self) -> None:
+        """CheckOtherModsOnce() (DiveToPalworld.cs L.3202-3224) 相当の結線。
+        dev#103裁定: 他MODを検出しても変換自体はブロックしない、警告のみ。
+        Paksフォルダの列挙(ディスクI/O)を伴うため専用バックグラウンドスレッドで
+        実行し、起動直後のUIスレッドを固めない(元実装と同じ設計)。"""
+
+        def worker() -> None:
+            try:
+                paks_dir = pak_manager.paks_dir_quiet(self.app_root, cache=self._paks_dir_cache)
+                n = pak_manager.count_other_paks(paks_dir)
+            except Exception:  # noqa: BLE001 -- 診断用の副処理でメインを巻き込まない
+                return
+            if n is None or n == 0:
+                return
+
+            def show() -> None:
+                self._log("[other-mods] " + pak_manager.summarize_other_paks(n))
+                messagebox.showwarning(
+                    i18n.S("TitleOtherModsDetected"),
+                    i18n.F("MsgOtherModsDetectedFormat", n),
+                )
+
+            self.root.after(0, show)
+
+        threading.Thread(target=worker, daemon=True, name="OtherModsCheck").start()
+
+    # -- dev#620: パス健全性警告 -------------------------------------------
+
+    def _check_path_health_on_startup(self) -> None:
+        """CheckPathHealthOnStartup() (DiveToPalworld.cs L.3268-3304) 相当の
+        結線。path_health.build_path_facts/path_health_problem/path_health_line
+        (dev#134ロジック、単体テスト完備・importゼロだったdev#620)をinstall
+        (app_root)/work(work_root)の2系統について評価し、AppendLogログ+条件付き
+        警告ダイアログ(Cause/Actionの箇条書き)を出す。
+
+        workRootFailed(主系・フォールバック先ともに書き込み不可、C# L.3281-3287)
+        とWorkRootResolutionLine(C# L.3255-3266)はdev#614記号F(別issue)の対象
+        であり、本メソッドでは扱わない(dev#620 issue本文どおりの合理的解釈)。
+        文字列比較のみでディスクI/Oを伴わないため、_run_startup_self_checkと
+        同じくUIスレッドで直接呼んでよい。"""
+        onedrive = os.environ.get("OneDrive")
+        install = path_health.build_path_facts("install", self.app_root, onedrive)
+        work = path_health.build_path_facts("work", self.work_root, onedrive)
+        self._log(path_health.path_health_line(install))
+        self._log(path_health.path_health_line(work))
+
+        if not path_health.path_health_problem(install) and not path_health.path_health_problem(work):
+            return
+
+        bullets: list[str] = []
+        if path_health.path_health_has_too_long(install) or path_health.path_health_has_too_long(work):
+            bullets.append("- " + i18n.S("CausePathTooLong") + " / " + i18n.S("ActionPathTooLong"))
+        if install.unc or work.unc:
+            bullets.append("- " + i18n.S("CausePathUnc") + " / " + i18n.S("ActionPathUnc"))
+        if install.under_onedrive or work.under_onedrive:
+            bullets.append("- " + i18n.S("CausePathOneDrive") + " / " + i18n.S("ActionPathOneDrive"))
+
+        detail = path_health.path_health_line(install) + "\n" + path_health.path_health_line(work)
+        self._log("[!] " + i18n.S("TitlePathHealthWarning") + ": " + " / ".join(bullets))
+        messagebox.showwarning(
+            i18n.S("TitlePathHealthWarning"),
+            i18n.F("MsgPathHealthRiskFormat", "\n".join(bullets), detail),
+        )
+
+    # -- dev#618: Palworldバージョン互換チェック ---------------------------
+
+    def _known_good_bundled_path(self) -> str:
+        """KnownGoodBundledPath() (DiveToPalworld.cs L.3380-3383) 相当。"""
+        return os.path.join(self.app_root, "pipeline", "py", "known_good_palworld.json")
+
+    def _load_known_good_palworld(self) -> compat_check.KnownGoodPalworld:
+        """LoadKnownGood() (DiveToPalworld.cs L.3396-3403) 相当。同梱データが
+        読めなくても(パッケージング事故)例外を投げず空リストのまま返す
+        (元実装のtry/catchと同じfail-safe方針)。"""
+        bundled = ""
+        try:
+            with open(self._known_good_bundled_path(), "r", encoding="utf-8") as f:
+                bundled = f.read()
+        except OSError:
+            bundled = ""
+        return compat_check.merge_known_good(bundled, self._remote_known_good_json)
+
+    @staticmethod
+    def _read_steam_build_id(paks_dir: str) -> Optional[str]:
+        """ReadSteamBuildId() (DiveToPalworld.cs L.3344-3372) 相当。
+        <...>\\steamapps\\common\\Palworld\\Pal\\Content\\Paks から5階層親へ
+        上がって steamapps\\appmanifest_1623730.acf を読み、"buildid"の値
+        (数字のみ)を返す。取得できなければNone(判定不能=黙って動く)。"""
+        try:
+            steamapps_dir = paks_dir
+            for _ in range(5):  # Content, Pal, Palworld, common, steamapps
+                steamapps_dir = os.path.dirname(steamapps_dir)
+            acf = os.path.join(steamapps_dir, "appmanifest_1623730.acf")
+            if not os.path.isfile(acf):
+                return None
+            with open(acf, "r", encoding="utf-8", errors="ignore") as f:
+                for line in f:
+                    m = re.search(r'"buildid"\s*"(\d+)"', line, re.IGNORECASE)
+                    if m:
+                        return m.group(1)
+        except OSError:
+            pass
+        return None
+
+    def _detect_palworld_version(self) -> compat_check.PalworldDetection:
+        """DetectPalworldVersion() (DiveToPalworld.cs L.3405-3419) 相当。
+        Paksフォルダが見つからなければdetected=Falseのまま返す(判定不能=
+        黙って動く、元実装のコメントどおり)。"""
+        det = compat_check.PalworldDetection()
+        paks_dir = pak_manager.paks_dir_quiet(self.app_root, cache=self._paks_dir_cache)
+        if paks_dir is None:
+            return det
+        det.detected = True
+        det.build_id = self._read_steam_build_id(paks_dir)
+        try:
+            pak = os.path.join(paks_dir, pak_manager.PAL_WINDOWS_PAK_NAME)
+            if os.path.isfile(pak):
+                det.pak_size = os.path.getsize(pak)
+        except OSError:
+            pass
+        return det
+
+    def _palworld_manifest_breadcrumb_path(self) -> str:
+        """PalworldManifestBreadcrumbPath() (DiveToPalworld.cs L.3391-3394)
+        相当。convert_noue.py _warm_job()のjob_dir固定名("_warm_dummy")と
+        extract_vanilla.pyのMANIFEST_NAME("vanilla_manifest.json")に合わせた
+        固定パス。"""
+        return os.path.join(self.work_root, "_warm_dummy", "vanilla", "vanilla_manifest.json")
+
+    def _read_manifest_combined_hash(self) -> Optional[str]:
+        """ReadManifestCombinedHash() (DiveToPalworld.cs L.3421-3430) 相当。"""
+        try:
+            with open(self._palworld_manifest_breadcrumb_path(), "r", encoding="utf-8") as f:
+                data = json.load(f)
+            value = data.get("combined_hash") if isinstance(data, dict) else None
+            return str(value) if value else None
+        except (OSError, ValueError):
+            return None
+
+    def _evaluate_palworld_compat_now(self) -> tuple[compat_check.PalworldCompatStatus, compat_check.KnownGoodPalworld]:
+        """EvaluateCompatNow() (DiveToPalworld.cs L.3435-3441) 相当。診断ログ
+        (未結線・別途)とCheckPalworldVersionOnceの両方が使う共通経路
+        (両者の判定基準を一致させるため、元実装のコメントどおり)。"""
+        known = self._load_known_good_palworld()
+        det = self._detect_palworld_version()
+        manifest_hash = self._read_manifest_combined_hash()
+        return compat_check.evaluate(known, det, manifest_hash), known
+
+    def _resolve_palworld_compat_status(
+        self, sleep_fn=time.sleep
+    ) -> "tuple[compat_check.PalworldCompatStatus, compat_check.KnownGoodPalworld] | None":
+        """CheckPalworldVersionOnce() (DiveToPalworld.cs L.3456-3497) の判定
+        部分のみを切り出したもの(スレッド起動・警告表示はこのメソッドの外側、
+        _check_palworld_version_once側の担当)。戻り値がNoneなら初回の判定
+        自体に失敗した(=確認に失敗しても本体の動作は変えない、元実装の
+        `catch (Exception) { return; }`と同じ)。
+
+        dev#91: 版番号が既知と不一致でも、抽出物マニフェスト
+        (vanilla_manifest.json)が既知良好と一致すれば警告しない。manifestは
+        起動直後に自動で走るwarm-cache(_ensure_blender_ready_on_startup経由の
+        warm_startup.py)が完了しないと手に入らないため、manifest_available で
+        なければ最大5分(3秒間隔)ポーリングしてから諦める(元実装と同じ
+        タイムアウト値)。`sleep_fn`はテスト時に実待機を避けるための注入点
+        (既定はtime.sleep)。"""
+        try:
+            st, known = self._evaluate_palworld_compat_now()
+        except Exception:  # noqa: BLE001 -- 確認に失敗しても本体の動作は変えない
+            return None
+        if not st.detected or not st.should_warn:
+            return st, known
+
+        if not st.manifest_available:
+            poll_interval_s = 3.0
+            timeout_s = 5 * 60.0
+            waited = 0.0
+            while waited < timeout_s:
+                sleep_fn(poll_interval_s)
+                waited += poll_interval_s
+                try:
+                    st, known = self._evaluate_palworld_compat_now()
+                except Exception:  # noqa: BLE001
+                    break
+                if not st.should_warn or st.manifest_available:
+                    break
+        return st, known
+
+    def _check_palworld_version_once(self) -> None:
+        """CheckPalworldVersionOnce() (DiveToPalworld.cs L.3456-3497) 相当の
+        結線。版が既知と不一致でも警告のみ(ブロックしない)。acfの読み取りや
+        大きなpakへのアクセス、最大5分のポーリング待ちを伴うため専用
+        バックグラウンドスレッドで実行する(元実装と同じ設計)。"""
+
+        def worker() -> None:
+            result = self._resolve_palworld_compat_status()
+            if result is None:
+                return
+            st, known = result
+            if not st.should_warn:
+                return
+
+            def show() -> None:
+                self._log(
+                    "Warning: the detected Palworld version differs from the "
+                    "verified version (" + compat_check.format_detected(st)
+                    + ", supported: " + compat_check.format_supported(known)
+                    + ") — you can continue"
+                )
+                messagebox.showwarning(
+                    i18n.S("TitlePalworldVersionCheck"),
+                    i18n.F(
+                        "MsgPalworldVersionMismatchFormat",
+                        compat_check.format_supported(known),
+                        compat_check.format_detected(st),
+                    ),
+                )
+
+            self.root.after(0, show)
+
+        threading.Thread(target=worker, daemon=True, name="PalworldCompatCheck").start()
+
+    # -- dev#619: 起動時更新通知 --------------------------------------------
+
+    def _check_for_update_once(self) -> None:
+        """CheckForUpdateOnStartup() (DiveToPalworld.cs L.3505-3546) 相当の
+        結線。update_check.check_for_update()(HTTP GET含む純ロジック分離済み、
+        聖域: 取得失敗はいかなるエラー表示・例外にもならないこと)を専用
+        バックグラウンドスレッドで呼ぶ。dev#89: 取得できた"palworld_known_good"
+        ブロックはlatestの有無に関わらずキャッシュする(compat_check側が次回の
+        判定で使う)。"""
+
+        def worker() -> None:
+            try:
+                result = update_check.check_for_update(TOOL_VERSION)
+            except Exception:  # noqa: BLE001 -- 聖域: 取得失敗は無音で諦める
+                return
+            if result.remote_known_good_json:
+                self._remote_known_good_json = result.remote_known_good_json
+            if not result.has_update or not result.display_version:
+                return
+            display_version = result.display_version
+            self.root.after(0, lambda: self._show_update_notice(display_version))
+
+        threading.Thread(target=worker, daemon=True, name="UpdateCheck").start()
+
+    def _show_update_notice(self, display_version: str) -> None:
+        """ShowUpdateNotice() (DiveToPalworld.cs L.3595-3607) 相当。UIスレッド
+        専用。updateLabel/updateNowButton(WP-A1で骨格のみ配置・place_forget()
+        済み)を表示条件付きで再表示する。"""
+        self._pending_update_version = display_version
+        update_label = self.widgets["updateLabel"]
+        update_label.config(text=i18n.F("UpdateNoticeFormat", display_version))
+        update_label.place(x=12, y=822, width=1058, height=20)
+        update_now_button = self.widgets["updateNowButton"]
+        update_now_button.place(x=12, y=848, width=130, height=22)
+
+    def _on_open_update_download_page(self) -> None:
+        """OpenUpdateDownloadPage() (DiveToPalworld.cs L.3613-3617) 相当。
+        既定ブラウザで配布ページを開く。失敗しても無音(通知クリックの延長で
+        二重にエラーダイアログを出す必要は無い、元実装のコメントどおり)。"""
+        try:
+            webbrowser.open(update_check.UPDATE_DOWNLOAD_PAGE_URL)
+        except Exception:  # noqa: BLE001 -- 元実装と同じく無音で諦める
+            pass
+
+    def _get_os_description(self) -> str:
+        """GetOsDescription() (DiveToPalworld.cs L.3939) の簡略版。
+        C#はレジストリを直読みして厳密なWindowsビルド番号を得ていたが、Python版は
+        標準ライブラリのplatformモジュールで足りる粒度に留める(診断ログの
+        補助情報であり、この値自体がゲート判定に使われることはないため)。"""
+        try:
+            return f"Windows {platform.release()} ({platform.version()})"
+        except Exception:  # noqa: BLE001
+            return "unknown"
+
+    def _build_diagnostics_text(self) -> str:
+        """BuildReportPayloadJson前段の「診断ログ本文」組み立て(DiveToPalworld.cs
+        L.4180-4219相当、§2.5)。support_dialog.SupportContext.build_diagnostics_text
+        コールバックの実体。dev#98/#103のOtherPakSummaryLine(=SummarizeOtherPaks、
+        WP-A11/dev#549で移植済みだったがmain_window結線が無かった)をここで
+        実際に組み込む(D1の統合対象そのもの)。"""
+        lines: list[str] = []
+        lines.append(f"date: {datetime.now().isoformat(timespec='seconds')}")
+        lines.append(f"version: {TOOL_VERSION}")
+        lines.append(f"os: {self._get_os_description()}")
+        file_lang = i18n.FILE_LANG_CODES.get(i18n.current_lang, i18n.current_lang)
+        lines.append(f"lang: {file_lang} (ui) / {self._current_os_culture_name() or 'unknown'} (os)")
+        vrm_path = self.widgets["vrmBox"].get().strip() if "vrmBox" in self.widgets else ""
+        avatar_name = os.path.basename(vrm_path) if vrm_path else "(not selected)"
+        lines.append(f"avatar: {avatar_name}")
+        try:
+            paks_dir = pak_manager.paks_dir_quiet(self.app_root, cache=self._paks_dir_cache)
+            other_pak_line = pak_manager.summarize_other_paks(pak_manager.count_other_paks(paks_dir))
+        except Exception:  # noqa: BLE001 -- 診断文の組み立て自体は失敗させない
+            other_pak_line = "other_paks: unknown (paks dir not found)"
+        lines.append(other_pak_line)
+        status_text = self.widgets["statusLabel"].cget("text") if "statusLabel" in self.widgets else ""
+        lines.append(f"status: {status_text}")
+        lines.append("--- Execution Log (all work on this avatar, including across process steps) ---")
+        try:
+            log_text = self.log_box.get("1.0", "end-1c")
+        except tk.TclError:
+            log_text = ""
+        lines.append(log_text)
+        return "\n".join(lines)
+
+    def _on_show_support_dialog(self) -> None:
+        """reportButton.Click相当(ShowSupportDialog()呼び出し箇所)。
+        dev#532 D1: WP-A5(inquiry.py/support_dialog.py)が結線権限を持たな
+        かったボタンを統合WPで実配線する。"""
+        channel = dist_channel.read_dist_channel(self.app_root)
+        file_lang = i18n.FILE_LANG_CODES.get(i18n.current_lang, i18n.current_lang)
+        ctx = support_dialog.SupportContext(
+            tool_version=TOOL_VERSION,
+            lang=file_lang,
+            channel=channel,
+            get_os_description=self._get_os_description,
+            get_avatar_name=lambda: (
+                os.path.basename(self.widgets["vrmBox"].get().strip())
+                if self.widgets["vrmBox"].get().strip()
+                else "(not selected)"
+            ),
+            get_status_text=lambda: self.widgets["statusLabel"].cget("text"),
+            build_diagnostics_text=self._build_diagnostics_text,
+            append_log=self._log,
+        )
+        support_dialog.show_support_dialog(self.root, self._support_state, ctx)
+
+    def _log(self, text: str) -> None:
+        """ログ欄への追記(旧AppendLog相当のごく簡略版)。dev#592層3(生存防御):
+        ログ欄への描画・コンソール/リダイレクト先への出力のいずれも、
+        GUI本体(ポーリング・進捗・完了処理)を巻き込んで死んではならない。"""
+        try:
+            self.log_box.configure(state="normal")
+            self.log_box.insert("end", text + "\n")
+            self.log_box.see("end")
+            self.log_box.configure(state="disabled")
+        except tk.TclError:
+            pass
+        try:
+            print(text)
+        except Exception:  # noqa: BLE001 -- dev#592: cp932等でUnicodeEncodeError
+            pass
+
+    def _stub(self, action_name: str):
+        """イベントハンドラの仮実装。押されたら「未実装」とログへ出すだけで、
+        実処理は一切行わない(WP-A2以降が結線する、DESIGN.md §5.2)。"""
+
+        def handler(*_args, **_kwargs):
+            self._log(f"[stub] {action_name}: 未実装")
+
+        return handler
+
+    def _register_text(self, widget: tk.Widget, key: str) -> None:
+        i18n.register(widget, key, i18n.default_text_setter)
+
+    def _register_tip(self, widget: tk.Widget, key: str) -> None:
+        tip = _ToolTip(widget)
+        self._tooltips.append(tip)
+        i18n.register(tip, key, lambda w, text: w.set_text(text))
+
+    def _update_window_title(self) -> None:
+        self.root.title(
+            f"Uchinoko for Palworld {TOOL_VERSION} - {i18n.S('TitleSubtitle')}"
+        )
+
+    # -- ウィジェット構築 ---------------------------------------------------
+
+    def _build_widgets(self) -> None:
+        root = self.root
+
+        # ---- 1行目: VRM (DESIGN.md §1.1 #1-#4) ----
+        lbl_vrm = tk.Label(root, text=i18n.S("LabelAvatar"))
+        lbl_vrm.place(x=12, y=15, width=70)
+        self._register_text(lbl_vrm, "LabelAvatar")
+
+        vrm_box = tk.Entry(root)
+        vrm_box.place(x=80, y=12, width=650, height=23)
+        self.widgets["vrmBox"] = vrm_box  # #1
+
+        browse = tk.Button(root, text=i18n.S("BtnBrowse"), command=self._on_browse)
+        browse.place(x=738, y=10, width=90, height=25)
+        self._register_text(browse, "BtnBrowse")
+        self.widgets["browse"] = browse  # #2
+
+        drop_hint = tk.Label(root, text=i18n.S("HintDragDrop"))
+        drop_hint.place(x=900, y=15, width=176)
+        self._register_text(drop_hint, "HintDragDrop")
+        self.widgets["dropHint"] = drop_hint  # #3
+
+        # #4: D&D受け皿(WP-A8で実配線。DESIGN.md §6-2)。
+        # C#版はForm全体(root相当)にAllowDrop=trueを設定しているため
+        # (L.946)、Python版も特定ウィジェットではなくrootウィンドウ全体へ
+        # インストールする。_setup_drag_and_drop()は__init__の最後で呼ぶ
+        # (root.winfo_id()がジオメトリ確定前でも有効なHWNDを返すため、
+        # ここ=_build_widgets内で呼んでも問題は無いが、他の初期化と
+        # 順序を揃えるため__init__側に置く)。
+        self.widgets["dndTarget"] = None  # 実体はウィジェットではなくdnd.DropTarget
+
+        # ---- 2行目: メイン操作 (#5-#9) ----
+        convert_button = tk.Button(
+            root, text=i18n.S("BtnFullConvert"), command=self._on_full_convert
+        )
+        convert_button.place(x=12, y=44, width=200, height=36)
+        self._register_text(convert_button, "BtnFullConvert")
+        self.widgets["convertButton"] = convert_button  # #5
+
+        cancel_button = tk.Button(
+            root, text=i18n.S("BtnCancelConvert"), state="disabled",
+            command=self._on_cancel_convert,
+        )
+        # dev#532 WP-A10: en "Cancel Conversion" が幅100pxであふれる
+        # (i18n_overflow_lint.py実測 avail=89/measured=97、over=8px)ため、
+        # 訳文は変えず幅を112pxへ拡張。busy_bar/blender_retry_button側の
+        # 開始x=330に接するまで(convert_buttonの終端212との間に4pxの隙間を残す)
+        # 広げても、cancel_buttonが有効化されるタイミング(#7のbusy_bar表示と同時)
+        # と重ならない範囲(x=216+112=328 < 330)に収めてある。
+        cancel_button.place(x=216, y=44, width=112, height=36)
+        self._register_text(cancel_button, "BtnCancelConvert")
+        self.widgets["cancelButton"] = cancel_button  # #6
+
+        # #7: RunPipeline() L.2602-2603相当のジオメトリを_BUSY_BAR_GEOMETRYへ
+        # 憶えておき、開始/終了のたびplace()/place_forget()し直す
+        # (Visible=false初期状態、L.1012)
+        self._busy_bar_geometry = dict(x=330, y=46, width=740, height=12)
+        busy_bar = ttk.Progressbar(root, orient="horizontal", mode="determinate", maximum=100)
+        busy_bar.place(**self._busy_bar_geometry)
+        busy_bar.place_forget()
+        self.widgets["busyBar"] = busy_bar  # #7
+
+        status_label = tk.Label(root, text=i18n.S("StatusPromptVrm"), anchor="w")
+        status_label.place(x=330, y=62, width=740)
+        self.widgets["statusLabel"] = status_label  # #8
+        # StatusPromptVrmは状態依存の初期表示であり静的i18nキーではないため
+        # RegisterI18nTextはしない(C#側も同様、言語切替時はUpdateButtonStates等
+        # 別経路で再計算する設計。DESIGN.md §4.4の対象外)
+
+        blender_retry_button = tk.Button(
+            root, text=i18n.S("BtnBlenderRetry"),
+            command=self._ensure_blender_ready_on_startup,
+        )
+        blender_retry_button.place(x=330, y=44, width=160, height=36)
+        blender_retry_button.place_forget()  # Visible=false 初期状態(失敗時のみ表示)
+        self._register_text(blender_retry_button, "BtnBlenderRetry")
+        self._register_tip(blender_retry_button, "TipBlenderRetry")
+        self.widgets["blenderRetryButton"] = blender_retry_button  # #9
+
+        # ---- 3行目: こだわり設定 (#10-#14) ----
+        self._kodawari_open = False
+        kodawari_toggle = tk.Button(
+            root, text="▼ " + i18n.S("LabelKodawari"), command=self._on_toggle_kodawari
+        )
+        kodawari_toggle.place(x=12, y=88, width=150, height=26)
+        self.widgets["kodawariToggle"] = kodawari_toggle  # #10
+
+        kodawari_panel = tk.Frame(root, relief="solid", borderwidth=1)
+        kodawari_panel.place(x=12, y=118, width=1058, height=80)
+        kodawari_panel.place_forget()  # Visible=false 初期状態(L.1051)
+        self._kodawari_panel = kodawari_panel
+
+        lbl_shadow = tk.Label(kodawari_panel, text=i18n.S("LabelShadowStrength"))
+        lbl_shadow.place(x=8, y=12, width=110)
+        self._register_text(lbl_shadow, "LabelShadowStrength")
+
+        shadow_bar = tk.Scale(
+            kodawari_panel, from_=0, to=100, orient="horizontal", showvalue=False,
+        )
+        shadow_bar.set(30)
+        shadow_bar.place(x=120, y=0, width=300, height=34)
+        shadow_label = tk.Label(kodawari_panel, text="30%")
+        shadow_label.place(x=430, y=12, width=50)
+
+        def _on_shadow_change(_value, bar=shadow_bar, lbl=shadow_label):
+            lbl.config(text=f"{int(float(_value))}%")
+
+        shadow_bar.config(command=_on_shadow_change)
+        self._register_tip(shadow_bar, "TipShadowBar")
+        self.widgets["shadowBar"] = shadow_bar  # #11
+
+        mats_button = tk.Button(
+            kodawari_panel, text=i18n.S("BtnMatsOnly"),
+            command=self._on_materials_only,
+        )
+        mats_button.place(x=500, y=6, width=180, height=30)
+        self._register_text(mats_button, "BtnMatsOnly")
+        self._register_tip(mats_button, "TipMatsButton")
+        self.widgets["matsButton"] = mats_button  # #12
+
+        # dev#532 WP-A10: en "Drop Bones (Advanced):" が幅110pxであふれる
+        # (i18n_overflow_lint.py実測 avail=104/measured=128、over=24px)ため、
+        # 訳文は変えず幅を140pxへ拡張。同じ行に並ぶdrop_bones_box/hint/
+        # preview_buttonは元の隙間(2px/10px/10px)を保ったまま+30pxぶん
+        # 右へずらし、重なりが出ないようにしてある(kodawari_panel幅1058に
+        # 対して余裕あり)。
+        drop_bones_label = tk.Label(kodawari_panel, text=i18n.S("LabelDropBones"))
+        drop_bones_label.place(x=8, y=48, width=140)
+        self._register_text(drop_bones_label, "LabelDropBones")
+
+        drop_bones_box = tk.Entry(kodawari_panel)
+        drop_bones_box.place(x=150, y=44, width=400, height=23)
+        self._register_tip(drop_bones_box, "TipDropBones")
+        self.widgets["dropBonesBox"] = drop_bones_box  # #13
+
+        drop_bones_hint = tk.Label(kodawari_panel, text=i18n.S("HintDropBonesEmpty"))
+        drop_bones_hint.place(x=560, y=48, width=190)
+        self._register_text(drop_bones_hint, "HintDropBonesEmpty")
+
+        preview_button = tk.Button(
+            kodawari_panel, text=i18n.S("BtnPreviewUpdate"),
+            command=self._on_preview_only,
+        )
+        preview_button.place(x=760, y=44, width=150, height=28)
+        self._register_text(preview_button, "BtnPreviewUpdate")
+        self._register_tip(preview_button, "TipPreviewButton")
+        self.widgets["previewButton"] = preview_button  # #14
+
+        # ---- プレビュー+ログ (#15-#16) ----
+        # Top値はLayoutContentArea()が開閉状態に応じて動的計算する
+        # (layout_content_area()参照、#25)。ここでは初期値のみ置く。
+        preview_front = tk.Label(
+            root, text="(preview front)", relief="solid", borderwidth=1, bg="#f0f0f0",
+        )
+        preview_front.place(x=12, y=210, width=380, height=360)
+        self.widgets["previewFront"] = preview_front  # #15 (front)
+
+        preview_side = tk.Label(
+            root, text="(preview side)", relief="solid", borderwidth=1, bg="#f0f0f0",
+        )
+        preview_side.place(x=400, y=210, width=380, height=360)
+        self.widgets["previewSide"] = preview_side  # #15 (side)
+        # 実画像表示(work\<名>\converted\preview_male_stand[_side].png)は
+        # dev#599で実装済み(_apply_previews/_set_preview_widget参照)。
+        # Pillow等の追加依存は使わずtk.PhotoImage(Tk 8.6ネイティブPNGデコード)
+        # だけで完結させている。ここで生成するのは初期プレースホルダのLabelのみ
+
+        log_box = tk.Text(root, state="disabled", wrap="word")
+        log_box.place(x=790, y=210, width=280, height=360)
+        self.widgets["logBox"] = log_box  # #16
+        self.log_box = log_box
+
+        # ---- 作成済みMODの一覧と適用/解除 (#17-#20) ----
+        lbl_paks = tk.Label(root, text=i18n.S("LabelPakList"))
+        lbl_paks.place(x=12, y=584, width=130)
+        self._register_text(lbl_paks, "LabelPakList")
+        self.widgets["lblPaks"] = lbl_paks  # #17
+
+        applied_label = tk.Label(root, text=i18n.S("AppliedStatusChecking"), anchor="w")
+        applied_label.place(x=150, y=584, width=920)
+        self.widgets["appliedLabel"] = applied_label  # #18
+
+        pak_list = ttk.Treeview(
+            root, columns=("avatar", "file", "size", "created"), show="headings",
+        )
+        pak_list.heading("avatar", text=i18n.S("ColAvatar"))
+        pak_list.heading("file", text=i18n.S("ColFile"))
+        pak_list.heading("size", text=i18n.S("ColSize"))
+        pak_list.heading("created", text=i18n.S("ColCreatedAt"))
+        pak_list.column("avatar", width=200)
+        pak_list.column("file", width=380)
+        pak_list.column("size", width=100)
+        pak_list.column("created", width=170)
+        pak_list.place(x=12, y=608, width=870, height=180)
+        # 選択でのプレビュー・設定復元(PakListSelectedIndexChanged、
+        # DiveToPalworld.cs L.1126-1137相当)。dev#605で結線
+        # (_on_pak_list_selected/_apply_restored_settings参照、dev#616 A+Iと共用)。
+        pak_list.bind("<<TreeviewSelect>>", self._on_pak_list_selected)
+        self.widgets["pakList"] = pak_list  # #19
+        self._pak_list_columns = {
+            "avatar": "ColAvatar", "file": "ColFile", "size": "ColSize", "created": "ColCreatedAt",
+        }
+
+        apply_button = tk.Button(
+            root, text=i18n.S("BtnApply"), command=self._on_apply_selected
+        )
+        apply_button.place(x=890, y=608, width=180, height=34)
+        self._register_text(apply_button, "BtnApply")
+        self._register_tip(apply_button, "TipApply")
+        self.widgets["applyButton"] = apply_button  # #20 (apply)
+
+        remove_button = tk.Button(
+            root, text=i18n.S("BtnRemoveMod"), command=self._on_remove_applied
+        )
+        remove_button.place(x=890, y=648, width=180, height=34)
+        self._register_text(remove_button, "BtnRemoveMod")
+        self._register_tip(remove_button, "TipRemove")
+        self.widgets["removeButton"] = remove_button  # #20 (remove)
+
+        refresh_button = tk.Button(
+            root, text=i18n.S("BtnRefreshList"), command=self._on_refresh_pak_list
+        )
+        refresh_button.place(x=890, y=688, width=180, height=28)
+        self._register_text(refresh_button, "BtnRefreshList")
+        self.widgets["refreshButton"] = refresh_button  # #20 (refresh)
+
+        delete_button = tk.Button(
+            root, text=i18n.S("BtnDeleteResult"), command=self._on_delete_selected
+        )
+        delete_button.place(x=890, y=724, width=180, height=28)
+        self._register_text(delete_button, "BtnDeleteResult")
+        self._register_tip(delete_button, "TipDelete")
+        self.widgets["deleteButton"] = delete_button  # #20 (delete)
+
+        # ---- 問合せ (#21) ----
+        # dev#532 D1: ShowSupportDialog()相当の実配線。support_dialog.py(WP-A5)は
+        # main_window.pyへの結線権限を持たなかったため未配線のまま残っていた
+        # ("main_window.pyへのボタン結線自体は統合WPで行う"、support_dialog.py
+        # 冒頭コメント)。_on_show_support_dialog()参照。
+        report_button = tk.Button(
+            root, text=i18n.S("BtnReport"), command=self._on_show_support_dialog
+        )
+        report_button.place(x=890, y=760, width=180, height=28)
+        self._register_text(report_button, "BtnReport")
+        self._register_tip(report_button, "TipReport")
+        self.widgets["reportButton"] = report_button  # #21
+
+        # ---- 自動適用チェック (#22) ----
+        auto_apply_var = tk.BooleanVar(value=settings.load_autoapply(self.app_root))
+        auto_apply_check = tk.Checkbutton(
+            root, text=i18n.S("CheckAutoApply"), variable=auto_apply_var,
+            command=lambda: settings.save_autoapply(self.app_root, auto_apply_var.get()),
+            anchor="w",
+        )
+        auto_apply_check.place(x=12, y=794, width=500, height=20)
+        self._register_text(auto_apply_check, "CheckAutoApply")
+        self._register_tip(auto_apply_check, "TipAutoApply")
+        self.widgets["autoApplyCheck"] = auto_apply_check  # #22
+        self._auto_apply_var = auto_apply_var
+
+        # ---- 更新通知 (#23) ----
+        # dev#619結線: OpenUpdateDownloadPage() (DiveToPalworld.cs L.1195/1213/
+        # 3613-3617) 相当。クリックで既定ブラウザにupdate_check.py既存の
+        # UPDATE_DOWNLOAD_PAGE_URL(=DiveToPalworld.cs L.733 UpdateDownloadPageUrl
+        # をそのまま移植した定数)を開く。失敗しても無音(元実装のtry/catch通り)。
+        update_label = tk.Label(
+            root, text="", fg="blue", cursor="hand2", anchor="w",
+        )
+        update_label.place(x=12, y=822, width=1058, height=20)
+        update_label.place_forget()  # Visible=false 初期状態
+        update_label.bind("<Button-1>", lambda _e: self._on_open_update_download_page())
+        self._register_tip(update_label, "TipUpdateLabel")
+        self.widgets["updateLabel"] = update_label  # #23 (label)
+
+        update_now_button = tk.Button(
+            root, text=i18n.S("BtnUpdateNow"),
+            command=self._on_open_update_download_page,
+        )
+        update_now_button.place(x=12, y=848, width=130, height=22)
+        update_now_button.place_forget()  # Visible=false 初期状態
+        self._register_text(update_now_button, "BtnUpdateNow")
+        self._register_tip(update_now_button, "TipUpdateNow")
+        self.widgets["updateNowButton"] = update_now_button  # #23 (button)
+
+        # ---- 言語切替 (#24) ----
+        lbl_lang = tk.Label(root, text=i18n.S("LabelLanguage"))
+        lbl_lang.place(x=850, y=94, width=60)
+        self._register_text(lbl_lang, "LabelLanguage")
+
+        lang_var = tk.StringVar(value=i18n.LANG_DISPLAY_NAMES[i18n.LANGS.index(i18n.current_lang)])
+        lang_combo = ttk.Combobox(
+            root, textvariable=lang_var, values=i18n.LANG_DISPLAY_NAMES,
+            state="readonly",
+        )
+        lang_combo.place(x=914, y=90, width=156, height=24)
+        # dev#595: ぱん実機報告「初回起動時、Languageコンボの表示が空」への対応。
+        # state="readonly"のttk.Comboboxはtextvariableをコンストラクタで渡すだけ
+        # では、Tk側の内部選択インデックス(current())が追随せず初期表示が
+        # 空欄になりうる(readonly Comboboxの既知の挙動)。.current()で内部選択
+        # インデックスを明示的に確定させ、表示を強制する(現在言語の決定ロジック
+        # 自体=DetermineInitialLang相当は既存のまま変えていない。「決めた値を
+        # 実際にウィジェットへ反映する」配線漏れのみを直す〈GUI起動が禁じられて
+        # いるため実機目視はできていない。ttk.Comboboxのreadonly初期表示問題は
+        # 一般に知られた挙動であり、.current()呼び出しはその標準的な対処〉)。
+        lang_combo.current(i18n.LANGS.index(i18n.current_lang))
+        lang_combo.bind("<<ComboboxSelected>>", self._on_language_selected)
+        self._register_tip(lang_combo, "TipLanguageSwitch")
+        self.widgets["langCombo"] = lang_combo  # #24
+        self._lang_combo = lang_combo
+
+        # #25: LayoutContentArea相当(layout_content_area()メソッド、後述)。
+        # 独立したWidgetではなく再配置ロジックなので、呼び出し可能なメソッド
+        # 自体をlookup対象として登録する
+        self.widgets["layoutContentArea"] = self.layout_content_area  # #25
+
+    # -- イベントハンドラ(stub含む) -----------------------------------------
+
+    def _on_browse(self) -> None:
+        # browse.Click (DiveToPalworld.cs L.958-973)相当: .prefabならUnity輸出
+        # (RunUnityExport)、それ以外は最小SetVrm(vrmBoxへパスを入れるだけ。
+        # セッションログ復元・以前のjob.json設定復元はWP-A2の外、モジュール
+        # docstring参照)。
+        from tkinter import filedialog
+
+        path = filedialog.askopenfilename(
+            title=i18n.S("DlgTitleChooseAvatarFile"),
+            filetypes=[(i18n.S("LabelAvatar"), ("*.vrm", "*.fbx", "*.prefab"))],
+        )
+        if not path:
+            return
+        if path.lower().endswith(".prefab"):
+            self._on_prefab_selected(path)
+        else:
+            self._set_vrm_path(path)
+
+    def _set_vrm_path(self, path: str) -> None:
+        """SetVrm()相当(DiveToPalworld.cs L.1510-1546を、py版が非同期読み込みを
+        持たない実装に合わせて単純化したもの)。新しいアバターを選ぶたび
+        licenseConfirmedを一旦リセットし(L.1514相当)、続けてそのアバターの
+        job.jsonがあれば設定・プレビューを復元する(ApplyAvatarLoad()
+        L.1571-1584相当、dev#616 A+Iで結線)。vrmBoxは直前にpathへ直接
+        設定済みのため、復元側はvrm_pathで上書きしない(set_vrm_path=False。
+        C#版もApplyAvatarLoadからのApplyRestoredSettings呼び出しは
+        setVrmPath=falseで揃っている、L.1584)。"""
+        self.widgets["vrmBox"].delete(0, tk.END)
+        self.widgets["vrmBox"].insert(0, path)
+        self._license_confirmed = False
+        settings.save_last_vrm(self.app_root, path)
+        self.widgets["statusLabel"].config(text=i18n.S("StatusReadyToConvert"))
+        self._log(path)
+        name = pipeline_runner.sanitize_name(os.path.splitext(os.path.basename(path))[0])
+        job_dir = os.path.join(self.work_root, name)
+        self._apply_restored_settings(job_dir, set_vrm_path=False)
+        # dev#611: ApplyAvatarLoad() L.1591-1597相当。アバター登録の全経路
+        # (browse/D&D/prefabのUnity輸出完了)がこの_set_vrm_pathへ集約している
+        # ため、末尾でここを呼ぶだけで3経路すべてに自動プレビューが結線される。
+        self._maybe_auto_preview(path)
+
+    def _apply_restored_settings(self, job_dir: str, *, set_vrm_path: bool) -> bool:
+        """ApplyRestoredSettings()(DiveToPalworld.cs L.1633-1663)相当
+        (dev#616 A+I)。対応するjob.jsonが無ければ何もせずFalseを返す
+        (RestoreSettings() L.1621-1628の`if (!File.Exists(jobJson)) return;`
+        相当)。py版WP-A1骨格にはshoulderBar/mergeFingersCheck/unlitCheck/
+        twoSidedCheckに対応する可視ウィジェットが無い(C#版もUIには表示して
+        いない内部フィールド、L.1041-1046「内部互換性のためにフィールドを
+        初期化(UIには表示しない)」参照)。それらは_set_vrm_path冒頭で初期化
+        済みの内部属性(_shoulder_offset_deg等)への反映に留め、run_pipeline
+        呼び出し時にそのまま使われる(_start_pipeline参照)。dropBonesBox/
+        shadowBarは両版とも可視ウィジェットなのでそのまま反映する。
+
+        戻り値: job.jsonが見つかり反映できたか(呼び出し元は主にpak一覧選択
+        ハンドラの単体テストで使う)。"""
+        job_json = os.path.join(job_dir, "job.json")
+        data = pipeline_runner.read_job(job_json)
+        if data is None:
+            return False
+
+        if set_vrm_path:
+            vrm = data.get("vrm_path")
+            if vrm:
+                self.widgets["vrmBox"].delete(0, tk.END)
+                self.widgets["vrmBox"].insert(0, vrm)
+
+        # shoulder_offset_deg: `JsonNum(json, "shoulder_offset_deg", shoulderBar.Value)`
+        # 相当(キー欠落時は現在値を維持、L.1643-1645)。shoulderBar.Minimum/Maximum
+        # は-20/20(DiveToPalworld.cs L.1042)。
+        try:
+            sh = float(data.get("shoulder_offset_deg", self._shoulder_offset_deg))
+        except (TypeError, ValueError):
+            sh = self._shoulder_offset_deg
+        self._shoulder_offset_deg = max(-20, min(20, int(round(sh))))
+
+        # shadow_lift: `JsonNum(json, "shadow_lift", -1)`相当。0以上の時だけ
+        # 反映する(L.1646-1648)。shadowBarは0-100の可視ウィジェット。
+        try:
+            lift = float(data.get("shadow_lift", -1))
+        except (TypeError, ValueError):
+            lift = -1
+        if lift >= 0:
+            value = max(0, min(100, int(round(100 - lift * 100))))
+            self.widgets["shadowBar"].set(value)
+
+        self._merge_fingers = bool(data.get("merge_fingers", self._merge_fingers))
+        self._unlit = bool(data.get("unlit", self._unlit))
+        self._force_two_sided = bool(data.get("force_two_sided", self._force_two_sided))
+        # license_confirmed: `JsonBool(json, "license_confirmed", false)`相当。
+        # 他の項目と違い既定値は常にfalse(現在値を維持しない、L.1652)。
+        self._license_confirmed = bool(data.get("license_confirmed", False))
+
+        # drop_bones: `JsonStrArray(json, "drop_bones")`相当。キーが在れば
+        # (空配列でも)dropBonesBoxへ反映する(L.1653-1654)。
+        drops = data.get("drop_bones")
+        if isinstance(drops, list):
+            box = self.widgets["dropBonesBox"]
+            box.delete(0, tk.END)
+            box.insert(0, ", ".join(str(b) for b in drops))
+
+        # LoadPreviews(jobDir)相当(L.1660。py版は非同期プリロードが無いため
+        # imagesReady=falseの経路のみ、常にここでディスクから読む)。
+        try:
+            self._apply_previews(pipeline_runner.load_previews(job_dir))
+        except Exception as ex:  # noqa: BLE001 -- プレビュー表示の失敗で復元全体を壊さない
+            self._log(f"[preview] restore settings preview load failed: {ex}")
+        return True
+
+    def _maybe_auto_preview(self, path: str) -> None:
+        """ApplyAvatarLoad() L.1591-1597の起動条件部分に相当:
+        `if (File.Exists(r.Path) && !IsPreviewFresh() && runningProc == null
+        && blenderReady) RunPipeline(true, false, true);`
+        py版にはプレビュー鮮度判定(IsPreviewFresh/BuildPreviewSig、
+        DiveToPalworld.cs L.2416-2425)がまだ移植されていない(dev#611時点で
+        grep実測、該当関数・シグネチャ無し)ため、その項は対象外とし、
+        「登録のたびに毎回自動生成」に留める〈曖昧点、完了報告に明記〉。
+        残り3条件(ファイル存在/二重起動防止/Blender準備済み)はそのまま移植する。"""
+        if not os.path.isfile(path):
+            return
+        if not self._blender_ready:
+            return
+        if self._active_handle is not None and self._active_handle.is_running():
+            return
+        self._start_pipeline(preview_only=True, materials_only=False, auto=True)
+
+    # -- D&D(WP-A8、DESIGN.md §1.1-#4/§6-2、ui\dnd.pyとの結線) -----------------
+
+    def _setup_drag_and_drop(self) -> None:
+        """OnDragEnter/OnDragDrop配線相当(DiveToPalworld.cs L.946-948)。
+        非Windows環境ではdnd.install()がNoneを返すだけで何もしない
+        (dnd.is_supported()参照、pytest等の非Windows実行環境を壊さないため)。
+        失敗してもD&Dが使えなくなるだけでGUI自体は起動を続ける
+        (この裁定の元ネタ: DESIGN.md冒頭『失敗しても画面を止めない』方針)。"""
+        try:
+            self._drop_target = dnd.install(
+                self.root, on_path=self._on_dropped_path, on_rejected=self._on_drop_rejected
+            )
+        except Exception as ex:  # noqa: BLE001 -- D&D不可でも起動は継続する
+            self._drop_target = None
+            self._log(f"[dnd] 初期化に失敗、D&Dは無効: {ex}")
+
+    def _on_dropped_path(self, path: str) -> None:
+        """OnDragDrop() L.1406-1421相当(拒否判定・Blenderゲート機構を除いた
+        分岐部分。拡張子フィルタ・複数ファイル選択規則自体はdnd.py側の
+        pick_dropped_path()が既に適用済みでここへ渡ってくる)。"""
+        if dnd.is_prefab_path(path):
+            self._on_prefab_selected(path)
+        else:
+            self._set_vrm_path(path)
+
+    def _on_drop_rejected(self) -> None:
+        """OnDragDrop() L.1411-1415相当(拡張子不一致時のMessageBox)。"""
+        messagebox.showinfo(i18n.S("TitleConfirm"), i18n.S("MsgDropVrmOrPrefab"))
+
+    # -- pak管理系(WP-A4、DESIGN.md §2.3、pak_manager.pyとの結線) --------------
+
+    def _work_root(self) -> str:
+        """workRoot決定の暫定版。DiveToPalworld.cs L.913-932のworkRoot三点セット
+        (自動→%LOCALAPPDATA%フォールバック→ログ)はWP-A6/path_health.pyの担当領域
+        (DESIGN.md §4.1)。WP-A4はpak管理系の結線が主目的のため、ここでは
+        既定値(appRoot\\work)のみを使う〈合理的簡略化、A6実装後に差し替え予定〉。"""
+        return os.path.join(self.app_root, "work")
+
+    def _ask_paks_dir_manual(self) -> str | None:
+        """PaksDir()の手動指定フォールバック(FolderBrowserDialog相当、L.3096-3113)。
+        pak_manager.resolve_paks_dir()へ注入するコールバック(pak_manager.py自体は
+        tkinterに依存しない設計、DESIGN.md §5.2)。"""
+        from tkinter import filedialog
+
+        chosen = filedialog.askdirectory(title=i18n.S("DlgDescPaksFolder"))
+        return chosen or None
+
+    def _on_paks_dir_invalid(self, chosen_path: str) -> None:
+        """選んだフォルダにPal-Windows.pakが無かった場合の案内(L.3110-3112、
+        無言で受理しない=WP16の踏襲)。"""
+        from tkinter import messagebox
+
+        messagebox.showwarning(
+            i18n.S("TitlePalworldNotFound"),
+            i18n.F("MsgPaksNotFoundFormat", pak_manager.PAL_WINDOWS_PAK_NAME, chosen_path),
+        )
+
+    def _resolve_paks_dir_interactive(self) -> str | None:
+        """PaksDir()(L.3078-3115)相当。自動発見に失敗すればダイアログを出す。
+        ApplySelected/RemoveAppliedのように「ユーザー操作の起点」でだけ呼ぶ
+        (受動的な一覧更新ではpaks_dir_quiet系を使い、ダイアログを出さない)。"""
+        result = pak_manager.resolve_paks_dir(
+            self.app_root,
+            cache=self._paks_dir_cache,
+            ask_manual=self._ask_paks_dir_manual,
+            on_invalid=self._on_paks_dir_invalid,
+            log=self._log,
+        )
+        if result:
+            self._paks_dir_cache = result
+        return result
+
+    def _classify_apply_failure(self, ex: Exception) -> tuple[str, str]:
+        """ShowApplyFailure(L.3754-3789)の原因分類部分の移植(cause, action)。
+        WinAPIのERROR_DISK_FULL(112)/ERROR_HANDLE_DISK_FULL(39)はOSErrorの
+        winerror属性で判定する(C#のHResult判定と同じ発想)。"""
+        if isinstance(ex, PermissionError):
+            return i18n.S("CauseNoWritePermission"), i18n.S("ActionNoWritePermission")
+        if getattr(ex, "winerror", None) in (112, 39):
+            return i18n.S("CauseDiskFull"), i18n.S("ActionDiskFull")
+        if isinstance(ex, (FileNotFoundError, NotADirectoryError)):
+            return i18n.S("CauseTargetFolderNotFound"), i18n.S("ActionTargetFolderNotFound")
+        if isinstance(ex, OSError):
+            return i18n.S("CauseFileInUse"), i18n.S("ActionFileInUse")
+        return i18n.S("CauseUnexpected"), i18n.S("ActionUnexpected")
+
+    def _show_apply_failure(self, action_label: str, target_path: str, ex: Exception) -> None:
+        from tkinter import messagebox
+
+        cause, action = self._classify_apply_failure(ex)
+        self._log(f"[エラー] {action_label}に失敗: {target_path} / [{type(ex).__name__}] {ex}")
+        messagebox.showerror(
+            i18n.F("MsgApplyFailureTitleFormat", action_label),
+            i18n.F("MsgApplyFailureBodyFormat", action_label, cause, action, target_path),
+        )
+
+    def _on_refresh_pak_list(self) -> None:
+        """RefreshPakList()(L.3648-3661)相当。"""
+        pak_list = self.widgets["pakList"]
+        pak_list.delete(*pak_list.get_children())
+        self._pak_paths.clear()
+        self._pak_candidates = pak_manager.list_built_paks(self._work_root())
+        for pak_path, avatar_name in self._pak_candidates:
+            try:
+                st = os.stat(pak_path)
+                size_text = f"{st.st_size / 1048576.0:.1f} MB"
+                created_text = time.strftime("%Y/%m/%d %H:%M", time.localtime(st.st_mtime))
+            except OSError:
+                size_text = ""
+                created_text = ""
+            iid = pak_list.insert(
+                "", "end",
+                values=(avatar_name, os.path.basename(pak_path), size_text, created_text),
+            )
+            self._pak_paths[iid] = pak_path
+        self._on_update_applied_status()
+
+    def _on_pak_list_selected(self, _event=None) -> None:
+        """PakListSelectedIndexChanged(pakList.SelectedIndexChanged、
+        DiveToPalworld.cs L.1126-1137)相当(dev#605)。一覧から過去に変換した
+        アバターの行を選ぶと、そのjob.jsonの設定・プレビュー画像を画面へ
+        復元する(dev#616 A+I相当の復元処理を_apply_restored_settingsへ
+        共通化して使う)。jobDir = dirname(dirname(pak))はC#版と同じ
+        (pakは<jobDir>\\build\\*.pak、L.1134/pak_manager.resolve_delete_targets
+        と同じ計算)。C#版はpy版に無い非同期アバター読み込み(SetVrmの
+        バックグラウンド処理)の取り消し(CancelAvatarLoad、L.1132)も行うが、
+        py版の_set_vrm_pathは同期実装で該当する保留読み込みが存在しないため
+        対象外(モジュール内に類似の世代カウンタが無いことをgrepで確認済み)。"""
+        pak_list = self.widgets["pakList"]
+        selection = pak_list.selection()
+        if not selection:
+            return
+        iid = selection[0]
+        pak_path = self._pak_paths.get(iid)
+        if not pak_path:
+            return
+        job_dir = os.path.dirname(os.path.dirname(pak_path))
+        # LoadPreviews(jd)(L.1135)相当: job.jsonの有無に関わらずまず
+        # プレビューを試みる(C#版は無条件呼び出し。job.json不在時の
+        # 二重読み込みは_apply_restored_settings内部でも安全に空振りする)。
+        try:
+            self._apply_previews(pipeline_runner.load_previews(job_dir))
+        except Exception as ex:  # noqa: BLE001 -- プレビュー表示の失敗で選択操作自体を壊さない
+            self._log(f"[preview] pak list selection preview load failed: {ex}")
+        # RestoreSettings(Path.Combine(jd, "job.json"), true)(L.1136)相当。
+        self._apply_restored_settings(job_dir, set_vrm_path=True)
+
+    def _on_update_applied_status(self) -> None:
+        """UpdateAppliedStatus()(L.3669-3724)相当。ファイルの有無まではUIスレッドで
+        即座に確定させ、時間のかかるSHA1照合だけをバックグラウンドスレッドへ出す
+        (元の設計方針をそのまま踏襲、L.3665-3668のコメント参照)。"""
+        self._applied_status_gen += 1
+        gen = self._applied_status_gen
+        applied_label = self.widgets["appliedLabel"]
+        remove_button = self.widgets["removeButton"]
+
+        paks_dir = pak_manager.paks_dir_quiet(
+            self.app_root, cache=self._paks_dir_cache, log=self._log
+        )
+        if paks_dir is None:
+            applied_label.config(text=i18n.S("AppliedStatusNoPaksDir"))
+            remove_button.config(state="disabled")
+            return
+        self._paks_dir_cache = paks_dir
+
+        status = pak_manager.resolve_applied_target(paks_dir)
+        remove_button.config(state=("normal" if status["remove_enabled"] else "disabled"))
+        if not status["exists"]:
+            applied_label.config(text=i18n.S("AppliedStatusNone"))
+            return
+
+        target = status["target"]
+        try:
+            target_len = os.path.getsize(target)
+        except OSError:
+            applied_label.config(text=i18n.S("AppliedStatusUnknownMod"))
+            return
+
+        applied_label.config(text=i18n.S("AppliedStatusChecking"))
+        candidates = list(self._pak_candidates)
+
+        def worker() -> None:
+            try:
+                name = pak_manager.identify_applied_pak(target, target_len, candidates)
+            except Exception as ex:  # noqa: BLE001 -- 照合失敗を握りつぶさず見せる(L.3702-3713)
+                def on_fail() -> None:
+                    if gen != self._applied_status_gen:
+                        return
+                    applied_label.config(text=i18n.S("AppliedStatusCheckFailed"))
+                    self._log(f"[エラー] 適用中MOD確認に失敗: {ex}")
+
+                self.root.after(0, on_fail)
+                return
+
+            def on_done() -> None:
+                if gen != self._applied_status_gen:
+                    return
+                applied_label.config(
+                    text=i18n.F("AppliedStatusNamedFormat", name)
+                    if name is not None
+                    else i18n.S("AppliedStatusUnknownMod")
+                )
+
+            self.root.after(0, on_done)
+
+        threading.Thread(target=worker, daemon=True).start()
+
+    def _resolve_completed_pak_path(self, job_dir: str) -> str | None:
+        """OnPipelineDone() L.2924-2936のうち、完成pakの特定部分のみの移植
+        (アバター名=Path.GetFileName(jobDir)相当、C#版はここで一覧のListViewItemを
+        自動選択するが、dev#606では一覧UI(dev#601領分)に触れない最小経路とする
+        ため、pak_manager.list_built_paks(work_root)を直接照合してパスだけを返す)。
+        見つからなければNone。"""
+        avatar = os.path.basename(job_dir)
+        for pak_path, avatar_name in pak_manager.list_built_paks(self._work_root()):
+            if avatar_name == avatar:
+                return pak_path
+        return None
+
+    def _apply_pak_path(self, src: str, avatar_name: str) -> bool:
+        """ApplySelected()(L.3791-3827)の中核(ゲーム起動中警告・paksDir解決・
+        コピー・失敗時ダイアログ・成功時ステータス/メッセージ)。一覧UI(pakList
+        selection)に依存しない直接適用経路として dev#606(自動適用、
+        _on_pipeline_exit)と手動の「Palworldに適用」ボタン(_on_apply_selected)の
+        双方から共用する(二重実装しない、指示書の明示要求)。戻り値: 適用成功可否。"""
+        from tkinter import messagebox
+
+        if not src or not os.path.isfile(src):
+            messagebox.showwarning(i18n.S("LabelApply"), i18n.F("MsgModFileNotFoundFormat", src or ""))
+            return False
+        if pak_manager.is_game_running():
+            messagebox.showwarning(i18n.S("LabelApply"), i18n.S("MsgGameRunningApply"))
+            return False
+        paks_dir = self._resolve_paks_dir_interactive()
+        if paks_dir is None:
+            return False
+        try:
+            pak_manager.apply_pak(paks_dir, src)
+        except Exception as ex:  # noqa: BLE001 -- ShowApplyFailure相当で分類して見せる
+            self._show_apply_failure(
+                i18n.S("LabelApply"), os.path.join(paks_dir, pak_manager.INSTALL_NAME), ex
+            )
+            return False
+        self._on_update_applied_status()
+        self.widgets["statusLabel"].config(text=i18n.F("StatusAppliedFormat", avatar_name))
+        messagebox.showinfo(i18n.S("TitleApplySuccess"), i18n.F("MsgApplySuccessFormat", avatar_name))
+        return True
+
+    def _on_apply_selected(self) -> None:
+        """ApplySelected()(L.3791-3827)相当。中核処理は_apply_pak_pathへ委譲
+        (dev#606で自動適用と共用するため抽出、合理的解釈: 元の呼び出し順序のうち
+        ゲーム起動中判定/paksDir解決は共通コアの先頭へ移動したため、pak未検出時の
+        警告より後になる。ユーザー可視の分岐・文言は変えていない)。"""
+        from tkinter import messagebox
+
+        pak_list = self.widgets["pakList"]
+        selection = pak_list.selection()
+        if not selection:
+            messagebox.showinfo(i18n.S("TitleApplySuccess"), i18n.S("MsgSelectModFromList"))
+            return
+        iid = selection[0]
+        src = self._pak_paths.get(iid)
+        avatar_name = pak_list.item(iid, "values")[0]
+        if not src or not os.path.isfile(src):
+            messagebox.showwarning(i18n.S("LabelApply"), i18n.F("MsgModFileNotFoundFormat", src or ""))
+            self._on_refresh_pak_list()
+            return
+        self._apply_pak_path(src, avatar_name)
+
+    def _on_remove_applied(self) -> None:
+        """RemoveApplied()(L.4778-4812)相当。"""
+        from tkinter import messagebox
+
+        if pak_manager.is_game_running():
+            messagebox.showwarning(i18n.S("LabelRemove"), i18n.S("MsgGameRunningRemove"))
+            return
+        paks_dir = self._resolve_paks_dir_interactive()
+        if paks_dir is None:
+            return
+        try:
+            removed = pak_manager.remove_applied(paks_dir)
+        except Exception as ex:  # noqa: BLE001
+            self._show_apply_failure(
+                i18n.S("LabelRemove"), os.path.join(paks_dir, pak_manager.INSTALL_NAME), ex
+            )
+            return
+        if not removed:
+            self.widgets["statusLabel"].config(text=i18n.S("StatusNoModApplied"))
+            self._on_update_applied_status()
+            return
+        self._on_update_applied_status()
+        self.widgets["statusLabel"].config(text=i18n.S("StatusModRemoved"))
+
+    def _on_delete_selected(self) -> None:
+        """DeleteSelected()(L.3829-3903)相当。"""
+        from tkinter import messagebox
+
+        pak_list = self.widgets["pakList"]
+        selection = pak_list.selection()
+        if not selection:
+            return
+        iid = selection[0]
+        pak_path = self._pak_paths.get(iid)
+        avatar_name = pak_list.item(iid, "values")[0]
+        if not pak_path:
+            return
+
+        targets = pak_manager.resolve_delete_targets(self._work_root(), self.app_root, pak_path)
+
+        lines = [
+            i18n.F("ConfirmDeleteHeaderFormat", avatar_name),
+            "",
+            i18n.F("LineModFileFormat", os.path.basename(pak_path)),
+            i18n.F("LineWorkFolderFormat", targets["job_dir"]),
+        ]
+        if targets["ue_project_dir"] and os.path.isdir(targets["ue_project_dir"]):
+            lines.append(i18n.F("LineUeProjectFormat", targets["ue_project_dir"]))
+        lines.append("")
+        lines.append(i18n.S("NoteVrmNotDeleted"))
+        lines.append(i18n.S("NoteReloadVrmToRedo"))
+
+        if not messagebox.askyesno(i18n.S("TitleConfirmDelete"), "\n".join(lines)):
+            return
+
+        try:
+            pak_manager.delete_avatar_artifacts(targets["job_dir"], targets["ue_project_dir"])
+        except OSError as ex:
+            messagebox.showerror(i18n.S("TitleConfirmDelete"), i18n.F("MsgDeleteFailedFormat", str(ex)))
+
+        # 「最後に開いたVRM」の記憶が削除対象と同じなら忘れる(残すと次回起動時に
+        # 勝手に読み込んで作業フォルダが復活してしまう、L.3878-3890)
+        last_vrm = settings.load_last_vrm(self.app_root)
+        if last_vrm and pak_manager.sanitize_name(
+            os.path.splitext(os.path.basename(last_vrm))[0]
+        ) == avatar_name:
+            try:
+                os.remove(settings.lastvrm_file(self.app_root))
+            except OSError:
+                pass
+
+        # 削除したのが今開いているアバターなら表示も初期化する(L.3891-3899)
+        current_text = self.widgets["vrmBox"].get().strip()
+        if current_text and pak_manager.sanitize_name(
+            os.path.splitext(os.path.basename(current_text))[0]
+        ) == avatar_name:
+            self.widgets["vrmBox"].delete(0, tk.END)
+            # dev#599: previewFront/previewSideに実画像が表示されている場合、
+            # text=だけ書き換えても画像が残って見える(Labelはcompound=none既定で
+            # imageがtextより優先表示されるため)。image=""で明示的に外し、
+            # 保持していたPhotoImage参照も破棄する(L.3896-3897 previewFront.Image
+            # = null相当)。
+            self._preview_images.pop("previewFront", None)
+            self._preview_images.pop("previewSide", None)
+            self.widgets["previewFront"].config(image="", text="(preview front)")
+            self.widgets["previewSide"].config(image="", text="(preview side)")
+
+        self._on_refresh_pak_list()
+        self.widgets["statusLabel"].config(text=i18n.F("StatusDeletedFormat", avatar_name))
+
+    def _on_toggle_kodawari(self) -> None:
+        self._kodawari_open = not self._kodawari_open
+        toggle_btn = self.widgets["kodawariToggle"]
+        arrow = "▲" if self._kodawari_open else "▼"
+        toggle_btn.config(text=f"{arrow} {i18n.S('LabelKodawari')}")
+        if self._kodawari_open:
+            self._kodawari_panel.place(x=12, y=118, width=1058, height=80)
+        else:
+            self._kodawari_panel.place_forget()
+        self.layout_content_area()
+
+    def _on_language_selected(self, _event=None) -> None:
+        idx = i18n.LANG_DISPLAY_NAMES.index(self._lang_combo.get())
+        new_lang = i18n.LANGS[idx]
+        i18n.apply_language(new_lang)
+        settings.save_language_code(self.app_root, i18n.FILE_LANG_CODES[new_lang])
+        self._update_window_title()
+        pak_list = self.widgets["pakList"]
+        for col_id, key in self._pak_list_columns.items():
+            pak_list.heading(col_id, text=i18n.S(key))
+        toggle_btn = self.widgets["kodawariToggle"]
+        arrow = "▲" if self._kodawari_open else "▼"
+        toggle_btn.config(text=f"{arrow} {i18n.S('LabelKodawari')}")
+        # dev#596: appliedLabel(「適用中: ...」)はi18n.register()の自動再適用
+        # registryに載っていない(状態(未確認/なし/内容不明/名前判明)に応じて
+        # 都度動的に選ぶ複数キーのため、単一key登録では表現できない)。
+        # 言語切替時に再計算しないと、切替前の言語で表示されたテキストが
+        # そのまま残り続ける(例: 日本語表示中に検出された「適用中: 内容不明の
+        # MODが入っています」が、英語へ切り替えても英訳に更新されない)。
+        # 旧DiveToPalworld.cs ApplyLanguage() (L.874-901) がUpdateAppliedStatus()
+        # を呼んでいたのと同じ配線を、Python移植で復元する。
+        self._on_update_applied_status()
+
+    # -- WP-A2: 変換系ハンドラ(pipeline_runner.py配線) ------------------------
+    #
+    # 非同期方式はDESIGN.md §4.3どおり: pipeline_runner.ProcessHandleが
+    # threading.Thread+queue.Queueで子プロセスの出力を受け取り、ここでは
+    # root.after()で定期的にhandle.poll()を呼ぶ(tkinterはメインスレッド以外
+    # からのウィジェット操作を許さないため、on_line/on_exitコールバックは
+    # poll()を呼んでいるスレッド=メインスレッド上で実行される)。
+
+    _POLL_INTERVAL_MS = 80
+
+    def _on_full_convert(self) -> None:
+        self._start_pipeline(preview_only=False, materials_only=False)
+
+    def _on_materials_only(self) -> None:
+        self._start_pipeline(preview_only=False, materials_only=True)
+
+    def _on_preview_only(self) -> None:
+        self._start_pipeline(preview_only=True, materials_only=False)
+
+    def _ensure_license_confirmed(self) -> bool:
+        """EnsureLicenseConfirmed() L.2533-2545相当。"""
+        if self._license_confirmed:
+            return True
+        yes = messagebox.askyesno(i18n.S("TitleLicenseConfirm"), i18n.S("MsgLicenseConfirmBody"))
+        if yes:
+            self._license_confirmed = True
+            return True
+        return False
+
+    def _start_pipeline(
+        self, *, preview_only: bool, materials_only: bool, auto: bool = False
+    ) -> None:
+        """RunPipeline() L.2547-2607相当。auto=Trueはdev#611のアバター登録時
+        自動プレビュー起動(C#版 RunPipeline(previewOnly, materialsOnly, auto)の
+        第3引数相当)。C#版はauto時、二重起動中/ファイル未指定の案内ダイアログも
+        出さず黙って見送る(L.2549-2550の `if (!auto) MessageBox.Show(...)`)ため、
+        ここでも同様にauto時はダイアログを抑止する。"""
+        if self._active_handle is not None and self._active_handle.is_running():
+            if not auto:
+                messagebox.showinfo(i18n.S("TitleConfirm"), i18n.S("MsgAlreadyRunning"))
+            return
+        vrm_path = self.widgets["vrmBox"].get().strip()
+        if not os.path.isfile(vrm_path):
+            if not auto:
+                messagebox.showinfo(i18n.S("TitleConfirm"), i18n.S("MsgSpecifyVrmFile"))
+            return
+        # MODを作る操作(プレビュー以外)はアバター規約の確認が要る(L.2552相当)。
+        # auto経由は常にpreview_only=True(呼び出し元_maybe_auto_preview参照)
+        # なのでここには実質来ないが、C#版の分岐順序をそのまま踏襲する。
+        if not preview_only and not self._ensure_license_confirmed():
+            return
+
+        # silentPreview = auto; (L.2556相当)
+        self._silent_preview = auto
+        self._pipeline_warnings = []
+        self._early_preview_loaded_this_run = False
+        self._clear_log()
+        self._set_running_ui_state(True)
+        self.widgets["statusLabel"].config(
+            text=i18n.S("StatusPreviewGenerating") if preview_only
+            else i18n.S("StatusMaterialsApplying") if materials_only
+            else i18n.S("StatusFullConverting")
+        )
+
+        drop_bones_text = self.widgets["dropBonesBox"].get()
+        shadow_value = int(float(self.widgets["shadowBar"].get()))
+        self._active_handle = pipeline_runner.run_pipeline(
+            self.app_root, self.work_root, vrm_path,
+            preview_only=preview_only, materials_only=materials_only,
+            on_line=self._on_pipeline_line,
+            on_exit=lambda code: self._on_pipeline_exit(code, preview_only),
+            shoulder_offset_deg=self._shoulder_offset_deg,
+            merge_fingers=self._merge_fingers,
+            unlit=self._unlit,
+            force_two_sided=self._force_two_sided,
+            shadow_bar_value=shadow_value,
+            drop_bones_text=drop_bones_text,
+            license_confirmed=self._license_confirmed,
+        )
+        self.root.after(self._POLL_INTERVAL_MS, self._poll_active_handle)
+
+    def _on_cancel_convert(self) -> None:
+        """cancelButton.Click L.997-1003相当。"""
+        if self._active_handle is None or not self._active_handle.is_running():
+            return
+        if messagebox.askyesno(i18n.S("TitleConfirm"), i18n.S("ConfirmCancelConvertBody")):
+            self._active_handle.kill()
+
+    def _poll_active_handle(self) -> None:
+        """dev#592層3(生存防御): handle.poll()がここで例外を出すと、以後
+        self.root.after()による再スケジュールが行われずポーリングが恒久
+        停止する(dev#592根本原因)。poll()自体はpipeline_runner側でも
+        行単位try/exceptで守っているが(層3の本丸)、ここでも例外の有無に
+        かかわらず再スケジュールを保証する二段構えにする。"""
+        handle = self._active_handle
+        if handle is None:
+            return
+        try:
+            handle.poll()
+        except Exception as ex:  # noqa: BLE001
+            try:
+                self._log(f"[poll] unexpected error: {ex}")
+            except Exception:  # noqa: BLE001
+                pass
+        if handle.is_running():
+            self.root.after(self._POLL_INTERVAL_MS, self._poll_active_handle)
+
+    def _on_pipeline_line(self, line: str) -> None:
+        """AppendLog() L.2838-2883相当。"""
+        clean = pipeline_runner.strip_ansi(line)
+        marker = pipeline_runner.parse_progress_marker(clean)
+        if marker is not None:
+            pct, raw_label = marker
+            self.widgets["busyBar"]["value"] = pct
+            label = pipeline_runner.translate_progress_label_dynamic(raw_label)
+            self.widgets["statusLabel"].config(text=f"{label}... ({pct}%)")
+            # dev#288提案2(早期プレビュー反映、L.2854-2870相当)。dev#532方針A
+            # WP-A11/dev#549で結線。1回だけ・失敗しても変換本体には影響させない
+            # (try/exceptで握り、ログにだけ残す=「静かにログのみ」)。
+            job_dir = self._active_handle.job_dir if self._active_handle else None
+            if job_dir and pipeline_runner.should_load_early_preview(
+                pct, self._early_preview_loaded_this_run
+            ):
+                self._early_preview_loaded_this_run = True
+                try:
+                    self._apply_previews(pipeline_runner.load_previews(job_dir))
+                except Exception as ex:  # noqa: BLE001
+                    self._log(f"[preview-early] load_previews failed at pct={pct}: {ex}")
+            return
+        warning = pipeline_runner.parse_avatar_warning(clean)
+        if warning is not None:
+            self._pipeline_warnings.append(warning)
+            return
+        self._log(clean)
+
+    def _apply_previews(self, previews: dict[str, str | None]) -> None:
+        """LoadPreviews() L.2957-2963相当の反映部分(dev#599で実画像表示に実装)。
+        Pillow等の追加依存を使わず、Tk 8.6が標準で持つtk.PhotoImageのネイティブ
+        PNGデコードのみで完結させる(同梱ランタイムres\\python_embedにPillowが
+        無いため)。読み込み・表示に失敗した場合(ファイル無し・壊れPNG・Tk側の
+        デコードエラー等)は例外を握り、従来どおりファイル名文字列表示へ
+        フォールバックする(GUIを絶対に殺さない。dev#592の防御思想を踏襲)。"""
+        front = previews.get("front")
+        side = previews.get("side")
+        if front:
+            self._set_preview_widget("previewFront", front)
+        if side:
+            self._set_preview_widget("previewSide", side)
+
+    def _set_preview_widget(self, widget_key: str, image_path: str) -> None:
+        """previewFront/previewSideの1枚分の表示を担当。成功時は画像を、
+        失敗時はファイル名文字列(従来のプレースホルダ挙動)を表示する。"""
+        widget = self.widgets[widget_key]
+        try:
+            max_width, max_height = self._preview_display_size(widget)
+            photo = _load_scaled_preview_image(image_path, max_width, max_height)
+            # dev#599: 参照をselfへ保持する(Tkの罠。ローカル変数だけだと
+            # このメソッドを抜けた時点でGCされ画像が消える)。
+            self._preview_images[widget_key] = photo
+            widget.config(image=photo, text="")
+        except Exception as ex:  # noqa: BLE001
+            self._preview_images.pop(widget_key, None)
+            widget.config(image="", text=os.path.basename(image_path))
+            self._log(
+                f"[preview] failed to load image for {widget_key} "
+                f"({os.path.basename(image_path)}): {ex}"
+            )
+
+    @staticmethod
+    def _preview_display_size(widget: tk.Widget) -> tuple[int, int]:
+        """previewFront/previewSideウィジェットの現在の配置(place())から
+        表示域の幅・高さを読み取る(#25 layout_content_area()がこだわりパネルの
+        開閉に応じてheightを動的変更するため、生成時の固定値ではなく都度
+        place_info()から引く)。値が取れない・不正な場合は生成時の初期値
+        (380x360、L.583/L.589相当)にフォールバックする。"""
+        info = widget.place_info()
+        try:
+            width = int(info.get("width") or 0)
+        except (TypeError, ValueError):
+            width = 0
+        try:
+            height = int(info.get("height") or 0)
+        except (TypeError, ValueError):
+            height = 0
+        return (width if width > 0 else 380, height if height > 0 else 360)
+
+    def _on_pipeline_exit(self, code: int, preview_only: bool) -> None:
+        """OnPipelineDone() L.2894-2954相当。dev#600(完了ダイアログ)/dev#601(pak
+        一覧更新)/dev#606(MOD自動適用)/dev#611(自動プレビューのsilentPreview抑制)を
+        すべて結線する。C#版と同じ順序で統合: 警告 → preview_only分岐(silentPreview
+        なら完了ダイアログ抑制、L.2917相当) → (非preview_onlyのみ)一覧更新 →
+        自動適用 → 自動適用済みなら完了ダイアログを出さない(autoAppliedフラグ、
+        L.2944-2952相当)。"""
+        self._set_running_ui_state(False)
+        if code != 0:
+            self.widgets["statusLabel"].config(text=i18n.S("StatusFailedOrCancelled"))
+            return
+        # OnPipelineDone() L.2902相当: 全工程完了後に必ず1回、最終結果で再読込する
+        # (早期反映が間に合わなかった/失敗した場合の保険を兼ねる)。
+        handle = self._active_handle
+        if handle is not None and handle.job_dir:
+            try:
+                self._apply_previews(pipeline_runner.load_previews(handle.job_dir))
+            except Exception as ex:  # noqa: BLE001
+                self._log(f"[preview-final] load_previews failed: {ex}")
+        # OnPipelineDone() L.2905-2910相当: 警告ダイアログは完了ダイアログより先
+        # (どちらの分岐でも警告の存在に気付けるよう埋もれさせない)。
+        if self._pipeline_warnings:
+            messagebox.showwarning(
+                i18n.S("TitleConvertDoneWithWarnings"),
+                i18n.F("MsgConvertDoneWithWarningsFormat", "\n\n".join(self._pipeline_warnings)),
+            )
+        if preview_only:
+            self.widgets["statusLabel"].config(text=i18n.S("StatusPreviewDone"))
+            # dev#600×dev#611: OnPipelineDone() L.2916-2917相当の完了ダイアログ。
+            # silentPreview(dev#611、アバター登録時の自動プレビュー)がTrueの間は
+            # C#版と同様に抑制する(`if (!silentPreview)`相当)。
+            if not self._silent_preview:
+                messagebox.showinfo(i18n.S("TitlePreviewDone"), i18n.S("MsgPreviewDoneBody"))
+            return
+        self.widgets["statusLabel"].config(text=i18n.S("StatusReadyToConvert"))
+        # dev#601: OnPipelineDone() L.2919相当のRefreshPakList()結線
+        self._on_refresh_pak_list()
+        # dev#606: OnPipelineDone() L.2938-2949相当の自動適用結線。完成pakのフル
+        # パスをjob_dirから直接解決し、既存の「Palworldに適用」ボタンと同じ中核
+        # (_apply_pak_path)を呼ぶ。
+        auto_applied = False
+        if self._auto_apply_var.get() and handle is not None and handle.job_dir:
+            avatar_name = os.path.basename(handle.job_dir)
+            pak_path = self._resolve_completed_pak_path(handle.job_dir)
+            if pak_path is None:
+                self._log(f"[auto-apply] 完成pakが見つからないため自動適用をスキップ: {avatar_name}")
+            else:
+                try:
+                    auto_applied = self._apply_pak_path(pak_path, avatar_name)
+                except Exception as ex:  # noqa: BLE001 -- 仕様2: 例外は握ってGUIを殺さない
+                    auto_applied = False
+                    self._log(f"[auto-apply] 予期しない例外: {ex}")
+                self._log(f"[auto-apply] {'成功' if auto_applied else '失敗/中断'}: {avatar_name}")
+        # dev#600: OnPipelineDone() L.2950-2952相当の完了ダイアログ結線。
+        # 自動適用済み(autoApplied)なら二重の完了通知を避けるため抑制する。
+        if not auto_applied:
+            messagebox.showinfo(i18n.S("TitleConvertDone"), i18n.S("MsgConvertDoneBody"))
+
+    def _set_running_ui_state(self, running: bool) -> None:
+        """UpdateButtonStates()の変換中/非変換中の切替部分に相当する最小版。"""
+        state = "disabled" if running else "normal"
+        for key in ("convertButton", "matsButton", "previewButton"):
+            self.widgets[key].config(state=state)
+        self.widgets["cancelButton"].config(state=("normal" if running else "disabled"))
+        if running:
+            self.widgets["busyBar"]["value"] = 0
+            self.widgets["busyBar"].place(**self._busy_bar_geometry)
+        else:
+            self.widgets["busyBar"].place_forget()
+
+    def _clear_log(self) -> None:
+        log_box = self.log_box
+        log_box.configure(state="normal")
+        log_box.delete("1.0", tk.END)
+        log_box.configure(state="disabled")
+
+    # -- WP-A2: Unity輸出(RunUnityExport)ハンドラ -----------------------------
+
+    def _on_prefab_selected(self, prefab_path: str) -> None:
+        """RunUnityExport() L.2612-2682相当(起動〜完了検知まで)。"""
+        if self._active_handle is not None and self._active_handle.is_running():
+            messagebox.showinfo(i18n.S("TitleConfirm"), i18n.S("MsgOtherProcessRunning"))
+            return
+        script = pipeline_runner.build_unity_export_script_path(self.app_root)
+        if not os.path.isfile(script):
+            messagebox.showinfo(
+                i18n.S("TitleConfirm"), i18n.F("MsgExportScriptNotFoundFormat", script)
+            )
+            return
+        self._clear_log()
+        self._set_running_ui_state(True)
+        self.widgets["statusLabel"].config(text=i18n.S("StatusUnityExporting"))
+        self._active_handle = pipeline_runner.run_unity_export(
+            self.app_root, self.work_root, prefab_path,
+            on_line=self._on_pipeline_line,
+            on_exit=self._on_unity_export_exit,
+        )
+        self.root.after(self._POLL_INTERVAL_MS, self._poll_active_handle)
+
+    def _on_unity_export_exit(self, code: int) -> None:
+        """OnUnityExportDone() L.2684-2718相当。"""
+        self._set_running_ui_state(False)
+        handle = self._active_handle
+        out_dir = handle.out_dir if handle is not None else None
+        if code != 0:
+            self.widgets["statusLabel"].config(text=i18n.S("StatusUnityExportFailed"))
+            messagebox.showerror(i18n.S("TitleUnityExportError"), i18n.S("MsgUnityExportErrorBody"))
+            return
+        fbx = pipeline_runner.find_exported_fbx(out_dir) if out_dir else None
+        if fbx is None:
+            self.widgets["statusLabel"].config(text=i18n.S("StatusUnityExportNoFbx"))
+            messagebox.showinfo(
+                i18n.S("TitleUnityExport"), i18n.F("MsgUnityExportNoFbxFormat", out_dir)
+            )
+            return
+        self.widgets["statusLabel"].config(text=i18n.S("StatusUnityExportDone"))
+        self._set_vrm_path(fbx)
+
+    # -- Blender準備(DESIGN.md §2.2、WP-A3。実ロジックはblender_setup.py) --------
+
+    def _ensure_blender_ready_on_startup(self) -> None:
+        """EnsureBlenderReadyOnStartup() L.1998-2005相当。既に実行中/準備済みなら
+        何もしない(二重起動防止)。それ以外はワーカースレッドへ
+        blender_setup.do_ensure_blender_ready()を投げ、UIはブロックしない。
+        blenderRetryButtonのクリックからも同じ経路を通る(=失敗時リトライ)。"""
+        if self._blender_setup_running or self._blender_ready:
+            return
+        self._blender_setup_running = True
+        self.widgets["blenderRetryButton"].place_forget()
+        self.widgets["statusLabel"].config(text=i18n.S("StatusBlenderChecking"))
+        threading.Thread(target=self._blender_setup_worker, daemon=True).start()
+
+    def _blender_setup_worker(self) -> None:
+        """ワーカースレッド側の実処理。tkinterウィジェットには一切触れず、
+        すべて self._blender_queue 経由でメインスレッドへ中継する
+        (DESIGN.md §4.3、DoEnsureBlenderReady()のPostToUi相当)。"""
+
+        def on_progress(pct: int, phase: str) -> None:
+            self._blender_queue.put(("progress", pct, phase))
+
+        ok, fail_message, action = blender_setup.do_ensure_blender_ready(
+            self.app_root, on_progress=on_progress
+        )
+        self._blender_queue.put(("done", ok, fail_message, action))
+
+    def _poll_blender_queue(self) -> None:
+        """root.after()による定期ポーリング(DESIGN.md §4.3)。ワーカースレッドが
+        _blender_queueへ積んだ進捗中継/完了通知をメインスレッドで消費する。"""
+        try:
+            while True:
+                msg = self._blender_queue.get_nowait()
+                if msg[0] == "progress":
+                    self._on_blender_progress(msg[1], msg[2])
+                elif msg[0] == "done":
+                    self._on_blender_setup_done(msg[1], msg[2], msg[3])
+        except queue.Empty:
+            pass
+        finally:
+            self.root.after(100, self._poll_blender_queue)
+
+    def _on_blender_progress(self, pct: int, phase: str) -> None:
+        busy_bar = self.widgets["busyBar"]
+        busy_bar.place(x=330, y=46, width=740, height=12)
+        busy_bar["value"] = pct
+        text = i18n.F("StatusBlenderSettingUpFormat", phase, pct)
+        self.widgets["statusLabel"].config(text=text)
+
+    def _on_blender_setup_done(
+        self, ok: bool, fail_message: str | None, action: blender_setup.BlenderSetupAction
+    ) -> None:
+        self._blender_setup_running = False
+        self._blender_ready = ok
+        self.widgets["busyBar"].place_forget()
+        if ok:
+            self.widgets["statusLabel"].config(text=i18n.S("StatusPromptVrm"))
+            self.widgets["blenderRetryButton"].place_forget()
+            self._warm_startup_after_blender_ready()
+        else:
+            text = fail_message or i18n.S("MsgBlenderSetupFailedShort")
+            self.widgets["statusLabel"].config(text=text)
+            self.widgets["blenderRetryButton"].place(x=330, y=44, width=160, height=36)
+        self._log(f"[blender_setup] action={action.value} ok={ok}")
+
+    def _warm_startup_after_blender_ready(self) -> None:
+        """dev#532 D1: warm_startup.py(WP-A9)の結線。DoEnsureBlenderReady()
+        L.2073-2089の呼び出し順(blenderReady=true確定直後)を踏襲し、warm_
+        startup.warm_startup_after_blender_ready()を1回だけ呼ぶ(warm_startup.py
+        冒頭docstring「D1への結線手順」のとおり)。プロセス起動を伴うため
+        ワーカースレッドで実行し、UIスレッドをブロックしない。"""
+
+        def worker() -> None:
+            try:
+                blender_exe = blender_setup.find_blender(self.app_root)
+                paks_dir = pak_manager.paks_dir_quiet(self.app_root, cache=self._paks_dir_cache)
+                pak_path = (
+                    os.path.join(paks_dir, "Pal-Windows.pak") if paks_dir else None
+                )
+                warm_startup.warm_startup_after_blender_ready(
+                    self.app_root,
+                    self._work_root(),
+                    blender_exe,
+                    pak_path,
+                    conversion_pending=self._active_handle is not None,
+                )
+            except Exception as ex:  # noqa: BLE001 -- warm_startup自体が全例外を
+                # 握りつぶす設計だが(warm_startup.py参照)、find_blender()等の
+                # 呼び出し前処理の例外はここで追加防御する(起動シーケンスを
+                # 絶対に止めないための最終防壁)。
+                self.root.after(0, lambda: self._log(f"[warm_startup] skipped: {ex}"))
+
+        threading.Thread(target=worker, daemon=True, name="WarmStartup").start()
+
+    def layout_content_area(self) -> None:
+        """#25: LayoutContentArea()相当。こだわりパネルの開閉に応じて
+        プレビュー/ログ欄のTop位置を再計算する(DiveToPalworld.cs L.1312-1319
+        の簡略移植。厳密なpixel一致はWP-A1の受入対象外)。"""
+        top = 210 if not self._kodawari_open else 208
+        # 開閉どちらでもほぼ同じ位置に収まるよう、パネル分の高さ(80+余白)を
+        # 見込んだ固定値で近似している(本来はkodawariPanelの実高さから計算)
+        top = 208 if self._kodawari_open else 190
+        bottom_limit = 584 - 10
+        height = max(100, bottom_limit - top)
+        for key in ("previewFront", "previewSide", "logBox"):
+            widget = self.widgets[key]
+            x = {"previewFront": 12, "previewSide": 400, "logBox": 790}[key]
+            width = {"previewFront": 380, "previewSide": 380, "logBox": 280}[key]
+            widget.place(x=x, y=top, width=width, height=height)

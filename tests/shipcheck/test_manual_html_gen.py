@@ -52,8 +52,22 @@ def test_render_inline_renders_italic_without_double_star_conflict():
     out = gm.render_inline("*[English](manual.en.md) | [한국어](manual.ko.md)*")
     assert out.startswith("<em>")
     assert out.endswith("</em>")
-    assert '<a href="manual.en.md">English</a>' in out
+    # 言語切替リンクは公開URL(dl.osakishokai.com)へ張り替えられる(下記の
+    # test_render_inline_rewrites_language_links_to_public_urls参照)
+    assert '<a href="https://dl.osakishokai.com/manual/en">English</a>' in out
     assert "<strong>" not in out  # 単独の*は太字と誤認しないこと
+
+
+def test_render_inline_rewrites_language_links_to_public_urls():
+    """公開ページのR2キーは "manual"/"manual/en" のみ。相対mdファイル名のままだと
+    公開HTML上で言語切替リンクが全部404になる(2026-08-01 オーナー実バグ報告)。"""
+    out = gm.render_inline("[日本語](manual.md) / [English](manual.en.md)")
+    assert '<a href="https://dl.osakishokai.com/manual">日本語</a>' in out
+    assert '<a href="https://dl.osakishokai.com/manual/en">English</a>' in out
+    # 負の対照: マップ外のリンク先は書き換えない(test_render_inline_renders_linkの
+    # 相対リンク素通しと対になる)
+    assert gm._resolve_link_target("https://example.com/x") == "https://example.com/x"
+    assert gm._resolve_link_target("img/1.webp") == "img/1.webp"
 
 
 def test_render_inline_bold_and_italic_do_not_cross_contaminate():
@@ -233,18 +247,17 @@ def test_generate_file_rejects_unknown_manual_filename(tmp_path):
 #    2026-07-31に追記されたAV開示節の文言が生成物に含まれることを確認する。
 # ---------------------------------------------------------------------------
 
-# manual.md実物(2026-07-31時点)のAV開示節に実在する文言。この検査があることで、
-# 次に誰かがこの節の文言を書き換えても、配布物への配線が切れていないことが
-# 機械的に保証される。
+# manual.md実物のAV節(2026-08-01にユーザー向け短文へ書き直し。旧・監査官向け
+# 開示文とSECURITY.md等リポジトリファイル参照は全掃)に実在する文言。この検査が
+# あることで、次に誰かがこの節の文言を書き換えても、配布物への配線が切れて
+# いないことが機械的に保証される。
 _AV_SECTION_MARKERS_JA = [
-    "Windows Defenderなどのセキュリティソフトの汎用的な誤検知",
-    "現在も検出されます。",
-    "SignPath Foundation",
+    "セキュリティソフトに警告・ブロックされる場合",
+    "実行ファイル(exe)を同梱しない構成に変更",
 ]
 _AV_SECTION_MARKERS_EN = [
-    "generic heuristic/ML-based",
-    "It is still detected today.",
-    "SignPath Foundation",
+    "Security software shows a warning or blocks the tool",
+    "no longer contains any executable (.exe) files",
 ]
 
 

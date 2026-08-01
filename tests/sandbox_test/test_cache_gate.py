@@ -38,11 +38,13 @@ STAGE = "Uchinoko_for_Palworld"
 
 def _make_zip(path, files):
     """files: {relpath(ステージングフォルダ相対、_internal/は含まない): bytes}。
-    2026-07-31のランチャー廃止・_internal廃止後の実物canonical
-    zip(STAGE直下にレイヤーファイルが並ぶフラット構成)を模す。"""
+    dev#532 D1(2026-08-01)時点の実物canonical zip構成(app_py\\build.py)を模す:
+    ステージングフォルダ直下は Uchinoko.bat/README.txt/res\\ の3点のみで、
+    pipeline\\ 等のレイヤーファイルは res\\ 配下にある
+    (cache_gate.read_bytes_from_zip()が STAGE/res/<relpath> を読む前提)。"""
     with zipfile.ZipFile(path, "w", zipfile.ZIP_DEFLATED) as zf:
         for relpath, data in files.items():
-            zf.writestr(STAGE + "/" + relpath, data)
+            zf.writestr(STAGE + "/res/" + relpath, data)
 
 
 def _layer_payload(overrides=None):

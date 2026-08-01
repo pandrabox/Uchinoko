@@ -60,6 +60,23 @@ pyoozのソース(`pyooz-0.0.8-source\`)は、GPLv3の「対応するソース�
 配布 zip 内には、ビルド時に動的生成される `THIRD_PARTY_LICENSES.txt`(zip ルート直下)にも
 同様の説明があります。
 
+## Python 版(dev#532、移行中。2026-08-01時点ではまだ出荷経路ではない)
+
+`app\DiveToPalworld.cs`(csc.exe/WinForms)を `app_py\`(Python/tkinter)へ
+全面書き直しする dev#532 が進行中です。この移行が完了するまでは上記の
+「配布フルセット版」表に記載の内容が引き続き実際の出荷物です。移行完了後の
+配布物(`app_py\build.py` がビルド、`packaging\` 配下)には、上記に加えて
+以下の第三者コンポーネントが同梱される設計です。
+
+| コンポーネント | ライセンス | バージョン | 同梱形態・入手元 |
+|---|---|---|---|
+| Python(embeddable 版、公式ビルド無改変) | PSF License | 3.11.9 | `res\python_embed\` に同梱。python.org の公式 embeddable zip をそのまま展開したもの(`app_py\build.py` が SHA256 をピン留めして取得・照合)。ライセンス全文は配布物の `res\licenses\PYTHON_LICENSE.txt` |
+| Tcl/Tk ランタイム(`_tkinter.pyd` / `tcl86t.dll` / `tk86t.dll` / `tcl8.6` / `tk8.6` スクリプトライブラリ) | Tcl/Tk License(BSD 系) | Python 3.11.9 の公式フルインストーラに同梱されているもの相当 | embeddable 版には含まれないため、python.org の公式フルインストーラを一時的にサイレントインストールして該当ファイルのみを抽出し、embeddable Python へ上書き配置(`app_py\build.py` の `ensure_tkinter_bundle`)。抽出元と同じ Authenticode 署名("CN=Python Software Foundation")を保持していることを確認済み(`packaging\check_signatures.py`)。ライセンス全文は配布物の `res\licenses\TCL_TK_LICENSE.txt` |
+
+pyooz(`ooz.pyd`、GPLv3+)の扱いは Python 版でも上表と同一(差し込み素材として
+同梱、対応ソースは `third_party\pyooz-0.0.8-source\` に同梱済み)であり、
+GUI 実装言語の変更による差異はありません。
+
 ## テスト結果に含まれるサンプルアバターのプレビュー画像について
 
 `tests\relgate\baseline\<検体キー>\images\` には、リリース前の自動視覚回帰試験(層2)が

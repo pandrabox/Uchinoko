@@ -1,3 +1,10 @@
+<!-- TODO(v2.3.0, 2026-08-01): 日本語正本(manual.md)の以下の変更が未反映(訳文未作成)。
+  1) 起動手順: Uchinoko.exe → Uchinoko.bat のダブルクリックに変更。初回の「発行元を確認できません」系警告は「開く」でよい旨を追記
+  2) 冒頭に v2.3.0 の見た目変更の注記(ボタン配置と操作手順は従来同一・SSは順次更新)を追加
+  3) Blender手動配置先を res\assets\tools\blender-4.3.2-windows-x64\ に変更(旧v2.2.x以前の場所は括弧書きで併記)
+  4) SmartScreen節を削除し、AV(セキュリティソフト)節を事実記述のみの短文(警告・削除事象の報告があった/v2.3.0はexe非同梱構成/問題時は問合せへ)に書き直し
+  5) 言語切替リンク: ko/zh は公開HTML未提供のため非リンクの「準備中」表記に変更 -->
+
 # Uchinoko for Palworld 사용법 — VRChat 아바타 편
 
 *[日本語](manual.md) | [English](manual.en.md) | [繁體中文](manual.zh-TW.md) | [简体中文](manual.zh-CN.md)*

@@ -1,6 +1,8 @@
 # How to Use Uchinoko for Palworld — VRChat Avatar Edition
 
-*[日本語](manual.md) | [한국어](manual.ko.md) | [繁體中文](manual.zh-TW.md) | [简体中文](manual.zh-CN.md)*
+*[日本語](manual.md)* (한국어 / 繁體中文 / 简体中文: coming soon)
+
+**Note:** The app's appearance changed in v2.3.0, but the button layout and the operating steps are the same as before. Screenshots will be updated over time.
 
 ## Using Your Avatar
 Open your avatar's Unity project (works with Unity 2022.3.22f1).
@@ -13,7 +15,7 @@ Right-click the icon you just created and choose "Show in Explorer."
 **Quit Unity.**
 ![](img/4.webp)
 
-Open Uchinoko for Palworld (Uchinoko.exe).
+Open Uchinoko for Palworld by double-clicking Uchinoko.bat. The first time, a warning such as "The publisher could not be verified" may appear — it is fine to choose "Open" (or "Run") to continue.
 ![](img/1.webp)
 
 **The first time only**, Uchinoko automatically downloads the Blender build (about 350MB) needed
@@ -39,13 +41,6 @@ After a short wait, the MOD is applied (please make sure Palworld is closed).
 ![](img/9.webp)
 
 
-## If something goes wrong: Windows shows "Windows protected your PC" on first launch
-
-This is a SmartScreen warning caused by the executable being unsigned, since this is an
-individually developed tool. Click **"More info"** on the screen that appears, then click the
-**"Run anyway"** button that shows up to launch it.
-
-
 ## If something goes wrong: First-time setup (downloading Blender) fails
 
 Because of internet connectivity issues and similar causes, the automatic Blender download on
@@ -58,42 +53,18 @@ error, suspect this first.
    1. Download the Windows x64 build (Portable/zip) of Blender 4.3.2 from
       https://www.blender.org/download/.
    2. Extract the downloaded zip, and copy the contents of the folder that contains `blender.exe`
-      directly into the `assets\tools\blender-4.3.2-windows-x64\` folder, located next
-      to Uchinoko for Palworld (**in some versions this folder is instead located at
-      `_internal\assets\tools\blender-4.3.2-windows-x64\`** — check whether there is an
-      `_internal` folder next to Uchinoko for Palworld to tell which layout you have).
+      directly into the `res\assets\tools\blender-4.3.2-windows-x64\` folder, located next to
+      Uchinoko.bat (create the folder if it does not exist. **In older versions — v2.2.x and
+      earlier — this folder is instead located next to the executable, at
+      `assets\tools\blender-4.3.2-windows-x64\` or
+      `_internal\assets\tools\blender-4.3.2-windows-x64\`**).
 
 
-## If something goes wrong: Security software blocks the tool as a "severe threat"
+## If something goes wrong: Security software shows a warning or blocks the tool
 
-Because this tool is an individually developed, unsigned executable, generic heuristic/ML-based
-detection in security software such as Windows Defender can sometimes flag and block it as a
-"severe threat." This is a stronger symptom than the "unknown publisher" warning, and it does
-not mean the tool actually contains malware.
-
-- **The cause is structural.** As a small, unsigned executable, every build produces different
-  bytes, so security software evaluates it as a file it has "never seen before" each time.
-- **It is still detected today.** Our most recent measurement (2026-07-30, the single application
-  binary after removing the launcher) was flagged by **3 of 74** VirusTotal engines.
-  **Detection varies build to build** — if you are blocked, you can also try an earlier version
-  still available on the distribution page. We have since removed more code and have not
-  re-tested the current build, so we cannot state today's exact count.
-- **A controlled experiment confirmed the detection is unrelated to this tool's code.** A
-  do-nothing empty program built with the same compiler was flagged more, not less: **12 of 74**
-  engines with assembly metadata, **4 of 74** without — both higher than the real application's
-  3 of 74. See the "A note on antivirus false positives" section of
-  [SECURITY.md](../SECURITY.md) for details.
-- If you want to verify this yourself, all builds are produced by a public GitHub Actions
-  workflow, so anyone can build from source using the same steps and check the result
-  ([repository](https://github.com/pandrabox/Uchinoko)).
-- As a permanent fix, we are **preparing to submit an application for code signing through the
-  [SignPath Foundation](https://signpath.org/)** (as of 2026-07, the application has not been
-  submitted yet, and signing has not been obtained). A signed binary carries a verifiable
-  publisher identity, which should substantially reduce this kind of false positive.
-  <!-- TODO: once submitted, update this to say it has been submitted and is now awaiting
-       review; once signing is obtained, update this note accordingly -->
-- We do not provide instructions for changing your security software's settings (such as adding
-  exclusions). If the issue persists, please contact us using the in-app "Inquiry" button.
+Some antivirus products were reported to warn about or remove the downloaded files. Starting
+with v2.3.0, the package no longer contains any executable (.exe) files. If you run into
+problems, please contact us via the in-app "Contact" button.
 
 
 ## Tips

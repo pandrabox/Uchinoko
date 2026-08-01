@@ -40,9 +40,15 @@ Unity無しでこの環境からは実行できない(GameObject等はUnityEngin
      誤診断しないこと)
 
 2. test_structural_wiring:
-   BakeNdmf/ExportUnifiedFbxの2箇所のmi.Invoke呼び出しが実際に
-   try/catch(TargetInvocationException)で囲まれ、BuildInvocationFailureMessageと
-   Debug.LogException(生ログ保存)の両方を呼んでいることを構造チェックする。
+   「保護されるべき呼び出しサイト(reflectionのInvoke/SetValueを行う各静的メソッド)
+   ごとに、try/catch(TargetInvocationException)がBuildInvocationFailureMessageと
+   Debug.LogException(生ログ保存)の両方を呼んでいること」を関数単位で構造チェックする。
+   PR #565(dev#518)でBakeNdmf/ExportUnifiedFbxの2箇所からSetFormatBinary/
+   TrySetOption内の6箇所へ同パターンが正当に拡張された経緯を踏まえ、
+   「捕捉パターンの全体出現数がちょうどN件」という数え上げには依存しない
+   (拡張のたびに赤くなる脆い検査を避ける)。その代わり、既知の保護対象
+   関数(KNOWN_PROTECTED_CALL_SITES)それぞれについて「危険な呼び出しサイトが
+   存在し、かつそのサイトが漏れなく保護されている」ことを個別に検査する。
 
 3. test_no_package_name_hardcoded:
    純粋ロジックのソースに特定パッケージ名(azukimochi/Light Limit Changer等)が
@@ -226,44 +232,157 @@ def test_pure_logic_positive_and_negative_control():
         shutil.rmtree(tmpdir, ignore_errors=True)
 
 
-# --- 2) 呼び出し側の配線(2箇所のInvokeが実際にガードされている)の構造チェック ------
+# --- 2) 呼び出し側の配線: 呼び出しサイト(関数)単位の構造チェック --------------------
+#
+# 「全体でN件」という数え上げをやめ、reflectionの危険な呼び出し
+# (MethodInfo.Invoke/PropertyInfo.SetValue/FieldInfo.SetValue、変数名は本番コードの
+# 命名規約に合わせ mi/m/p/f を対象とする)を1件ずつ検出し、それぞれが
+# try/catch(TargetInvocationException)で囲まれ、かつcatch内でDebug.LogException(tie)と
+# BuildInvocationFailureMessage(の両方を呼んでいるかを個別に判定する。
+
+KNOWN_PROTECTED_CALL_SITES = ("BakeNdmf", "ExportUnifiedFbx", "SetFormatBinary", "TrySetOption")
+
+_RISKY_CALL_RE = re.compile(r"\b(?:mi|m|p|f)\.(?:Invoke|SetValue)\s*\(")
+_TRY_RE = re.compile(r"\btry\s*\r?\n?\s*\{")
+_CATCH_RE = re.compile(r"\A\s*catch\s*\(TargetInvocationException tie\)\s*\r?\n?\s*\{")
+_METHOD_SIG_RE = re.compile(
+    r"\n {4}(?:internal |public |private |protected )?(?:static |readonly )*"
+    r"[A-Za-z_][\w<>\[\],\.\s]*?\s+(\w+)\s*\([^)]*\)\s*\r?\n {4}\{")
+
+
+def _find_matching_brace(source, open_index):
+    """source[open_index]は'{'。対応する'}'のインデックスを返す。
+    文字列/文字リテラル・コメント内の中括弧に惑わされないよう最低限スキップする。"""
+    assert source[open_index] == "{", "呼び出し元のインデックス指定が'{'を指していない"
+    depth = 0
+    i = open_index
+    n = len(source)
+    while i < n:
+        c = source[i]
+        if c == "/" and i + 1 < n and source[i + 1] == "/":
+            i = source.index("\n", i)
+            continue
+        if c == "/" and i + 1 < n and source[i + 1] == "*":
+            i = source.index("*/", i + 2) + 2
+            continue
+        if c == "@" and i + 1 < n and source[i + 1] == '"':
+            i += 2
+            while i < n:
+                if source[i] == '"' and (i + 1 >= n or source[i + 1] != '"'):
+                    i += 1
+                    break
+                i += 2 if source[i] == '"' else 1
+            continue
+        if c == '"':
+            i += 1
+            while i < n and source[i] != '"':
+                i += 2 if source[i] == "\\" else 1
+            i += 1
+            continue
+        if c == "'":
+            i += 1
+            while i < n and source[i] != "'":
+                i += 2 if source[i] == "\\" else 1
+            i += 1
+            continue
+        if c == "{":
+            depth += 1
+        elif c == "}":
+            depth -= 1
+            if depth == 0:
+                return i
+        i += 1
+    raise AssertionError("マッチする閉じ括弧が見つからない(index={})".format(open_index))
+
+
+def _extract_class_body(source, class_name):
+    m = re.search(r"class\s+" + re.escape(class_name) + r"\b[^{]*\{", source)
+    assert m, "クラス{}が見つからない".format(class_name)
+    open_idx = m.end() - 1
+    close_idx = _find_matching_brace(source, open_idx)
+    return source[open_idx + 1:close_idx]
+
+
+def _iter_top_level_methods(source):
+    """DiveToPalworldExporterクラス直下(4スペースインデント)の各メソッドを
+    (関数名, 本体文字列)で列挙する。8スペース以上ネストしたローカル関数は対象外
+    (シグネチャを厳密に4スペースインデントに固定しているため)。"""
+    body = _extract_class_body(source, "DiveToPalworldExporter")
+    for m in _METHOD_SIG_RE.finditer(body):
+        name = m.group(1)
+        brace_idx = m.end() - 1
+        end_idx = _find_matching_brace(body, brace_idx)
+        yield name, body[brace_idx:end_idx + 1]
+
+
+def _guarded_risky_call_sites(body):
+    """body内の危険な呼び出し(mi/m/p/fのInvoke/SetValue)ごとに、それを囲む
+    tryブロック直後のcatch(TargetInvocationException tie)がDebug.LogException(tie)と
+    BuildInvocationFailureMessage(の両方を呼ぶかどうかを判定する。
+    戻り値: [(呼び出しテキスト, 保護されているか), ...]"""
+    results = []
+    for call_m in _RISKY_CALL_RE.finditer(body):
+        call_pos = call_m.start()
+        try_m = None
+        for tm in _TRY_RE.finditer(body, 0, call_pos):
+            try_m = tm  # 呼び出し直前(=直近)のtryを採用
+        if try_m is None:
+            results.append((call_m.group(0), False))
+            continue
+        try_open = try_m.end() - 1
+        try_close = _find_matching_brace(body, try_open)
+        if not (try_open < call_pos < try_close):
+            # 直近のtryが実際にこの呼び出しを囲んでいない(想定外の構造)
+            results.append((call_m.group(0), False))
+            continue
+        after = body[try_close + 1:]
+        catch_m = _CATCH_RE.match(after)
+        if not catch_m:
+            results.append((call_m.group(0), False))
+            continue
+        catch_open = try_close + 1 + catch_m.end() - 1
+        catch_close = _find_matching_brace(body, catch_open)
+        catch_body = body[catch_open + 1:catch_close]
+        guarded = ("Debug.LogException(tie)" in catch_body
+                   and "BuildInvocationFailureMessage(" in catch_body)
+        results.append((call_m.group(0), guarded))
+    return results
+
 
 def test_structural_wiring():
     source = _read_exporter_source()
+    functions = dict(_iter_top_level_methods(source))
 
-    checks = {
-        "BakeNdmfのmi.InvokeがTargetInvocationExceptionを捕捉する": (
-            r"mi\.Invoke\(null,\s*new object\[\]\s*\{\s*root\s*\}\);\s*\n\s*\}\s*\n"
-            r"\s*catch\s*\(TargetInvocationException tie\)"),
-        "ExportUnifiedFbxのmi.InvokeがTargetInvocationExceptionを捕捉する": (
-            r"result\s*=\s*mi\.Invoke\(null,\s*args\)\s*as\s*string;\s*\n\s*\}\s*\n"
-            r"\s*catch\s*\(TargetInvocationException tie\)"),
-        "両方の捕捉箇所がBuildInvocationFailureMessageを呼ぶ": (
-            r"throw new Exception\(BuildInvocationFailureMessage\(\"NDMF"),
-        "ExportUnifiedFbx側もBuildInvocationFailureMessageを呼ぶ": (
-            r"throw new Exception\(BuildInvocationFailureMessage\(\"統合FBX"),
-        "両方の捕捉箇所が生の例外をDebug.LogExceptionでログに残す(調査用)": (
-            r"catch\s*\(TargetInvocationException tie\)\s*\n\s*\{\s*\n"
-            r"(?:\s*//[^\n]*\n)*"
-            r"\s*Debug\.LogException\(tie\);"),
-    }
+    sites_by_function = {}
+    for name, body in functions.items():
+        sites = _guarded_risky_call_sites(body)
+        if sites:
+            sites_by_function[name] = sites
 
-    missing = []
-    for label, pattern in checks.items():
-        if re.search(pattern, source) is None:
-            missing.append(label)
+    # 既知の保護対象(dev#194/dev#518: BakeNdmf/ExportUnifiedFbx/SetFormatBinary/
+    # TrySetOption)が今も危険な呼び出しサイトとして存在すること(関数の削除・
+    # リネームで検査が骨抜きにならないための最低ライン)
+    missing_functions = [n for n in KNOWN_PROTECTED_CALL_SITES if n not in sites_by_function]
+    assert not missing_functions, (
+        "以下の関数に危険なreflection呼び出し(mi/m/p/f.Invoke|SetValue)が"
+        "見当たらない(関数名変更・削除の可能性): " + ", ".join(missing_functions))
 
-    assert not missing, "以下の配線が見当たらない:\n" + "\n".join("- " + m for m in missing)
+    # 呼び出しサイトごと(関数を問わず全件)にガードが効いていること。
+    # これがdev#194/dev#518ガードの本体チェック(全体件数には依存しない)
+    unguarded = []
+    for name, sites in sites_by_function.items():
+        for call_text, guarded in sites:
+            if not guarded:
+                unguarded.append("{}: {}".format(name, call_text))
+    assert not unguarded, (
+        "以下の呼び出しサイトがTargetInvocationException捕捉+Debug.LogException+"
+        "BuildInvocationFailureMessageで保護されていない:\n"
+        + "\n".join("- " + u for u in unguarded))
 
-    # Debug.LogExceptionを呼ぶcatchブロックが2箇所あることも数で確認
-    log_count = len(re.findall(
-        r"catch\s*\(TargetInvocationException tie\)\s*\n\s*\{\s*\n"
-        r"(?:\s*//[^\n]*\n)*\s*Debug\.LogException\(tie\);",
-        source))
-    assert log_count == 2, (
-        "TargetInvocationExceptionを捕捉してDebug.LogExceptionする箇所が{}件"
-        "(期待値2件: BakeNdmf/ExportUnifiedFbx)。想定外の追加/削除がないか確認"
-        .format(log_count))
+    # 既知の各関数について、保護済みの呼び出しサイトが1件以上あること
+    for name in KNOWN_PROTECTED_CALL_SITES:
+        assert any(guarded for _, guarded in sites_by_function[name]), (
+            "{}に危険な呼び出しはあるが、保護済みの呼び出しサイトが1件も無い".format(name))
 
 
 # --- 3) 負の対照: 特定パッケージ名がハードコードされていないこと ------------------

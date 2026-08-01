@@ -214,7 +214,7 @@ obtained separately for licensing reasons, and cannot be bundled in the reposito
 | Prerequisite | Source | How to place it |
 |---|---|---|
 | pyooz 0.0.8 (`ooz.pyd`) | `pip install pyooz`, or build it from the bundled source at `third_party\pyooz-0.0.8-source\pyooz-0.0.8.tar.gz` | Auto-detected if present in the user site-packages of your Python 3.13 environment (the default `pip install` location) |
-| python3.dll (Python 3.11, stable ABI redirector) | Install Python 3.11 (64-bit) from the official site [python.org](https://www.python.org/downloads/release/python-3110/) | Auto-detected if installed in the default location. If placed elsewhere, set the full path in the `D2P_PYTHON311_DLL` environment variable |
+| python3.dll (Python 3.11, stable ABI redirector) | No preparation needed (taken from the embeddable Python 3.11.9 that the build downloads automatically) | Automatic. Only set the `D2P_PYTHON311_DLL` environment variable to a full path if you need a different file (either way, the build fails unless the file passes the "forwards to python311" check) |
 
 You also need .NET Framework 4.8 (`csc.exe`, bundled with Windows 11) and PowerShell 7+ (`pwsh`).
 

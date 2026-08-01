@@ -14,9 +14,10 @@ Tier A(このファイルが直接実装。排他資源なし、目標2分以内
     A2 文書整合      README.md・README.en.md・docs\\・manual\\ 配下の公開文書に、FBXが
                      対応形式として書かれておらず、「Modular Avatar以外のNDMFプラグイン
                      非対応」の記載があることを守る(CLAUDE.md「対応スコープ」節が根拠)。
-    A3 アプリ健全性  app\\build_app.ps1 でGUIがコンパイルでき、起動直後に落ちないこと、
-                     かつ隠しCLI `--check-i18n`(5言語辞書の完全性自己検査)がOKを
-                     返すことを守る(dev#105: 実装済みなのに未接続だった検査を接続)。
+    A3 アプリ健全性  app_py\\main.py(Python/tkinter版GUI、dev#532方針A)を直接起動し
+                     起動直後に落ちないこと、かつ app_py\\i18n.py の5言語辞書完全性を
+                     守る(2026-08-01 dev#532 WP-C1: 旧C#/csc.exeビルド経路から切替。
+                     旧経路は _gate_a3_app_build_launch_CS_LEGACY() として温存)。
     A4 パイプライン健全性  pipeline\\配下全.pyのpy_compileと、pipeline\\py\\の
                      主要モジュールが実際にimportできることを守る(壊れたコミットの検出)。
     A5 入口の静的検査  pipeline\\cli\\convert.ps1 / export_from_unity.ps1 /
@@ -47,6 +48,7 @@ Tier B(SE班 ship_convert_cases.py を import して呼ぶだけ。未実装で�
 import argparse
 import datetime
 import glob
+import importlib.util
 import json
 import os
 import py_compile
@@ -63,6 +65,7 @@ DEVTOOLS_DIR = os.path.join(REPO_ROOT, "devtools")
 PIPELINE_DIR = os.path.join(REPO_ROOT, "pipeline")
 PIPELINE_PY_DIR = os.path.join(PIPELINE_DIR, "py")
 APP_DIR = os.path.join(REPO_ROOT, "app")
+APP_PY_DIR = os.path.join(REPO_ROOT, "app_py")
 
 
 # --- 汎用ヘルパ --------------------------------------------------------------
@@ -273,8 +276,89 @@ def gate_a2_doc_consistency(work_root):
 
 
 # --- A3: アプリのビルドと起動 ---------------------------------------------------
+#
+# dev#532 方針A WP-C1(2026-08-01): app\DiveToPalworld.cs(C#/WinForms/csc.exe)は
+# app_py\(Python/tkinter, dev#532 トラックA1-A6+B1で移植・パッケージング実運用化まで
+# 完了済み)へ切替中。csc.exeビルド→exe起動という手順は、Python移植によって
+# 「対象の入口(app_py\main.py)を直接起動する」だけで足りるようになった
+# (work\wp532A\DESIGN.md §0-1「ビルド→exe起動という手順自体が丸ごと不要になる」の
+# 実例)。旧C#経路は_gate_a3_app_build_launch_CS_LEGACY()として下に温存してある
+# (削除しない。C#資産自体はdev#532統合WP(D1)完了まで残る方針のため)。
 
 def gate_a3_app_build_launch(work_root):
+    t0 = time.time()
+    what = ("アプリ(GUI, app_py\\main.py版)が起動直後(数秒)に落ちないこと、かつ"
+            "i18n辞書(app_py\\i18n.py, 旧--check-i18n相当)の5言語完全性を守る"
+            "(dev#532 方針A WP-C1: 旧C#/csc.exeビルド経路からPython直接起動へ切替)")
+    main_py = os.path.join(APP_PY_DIR, "main.py")
+    detail_lines = []
+
+    if not os.path.isfile(main_py):
+        detail_lines.append("app_py\\main.py が見つからない: {}".format(main_py))
+        return dict(name="A3_app_build_launch", status="FAIL", seconds=time.time() - t0,
+                    what=what, detail="\n".join(detail_lines))
+
+    proc = None
+    launch_ok = False
+    try:
+        proc = subprocess.Popen([sys.executable, main_py], cwd=REPO_ROOT)
+        time.sleep(3.5)
+        launch_ok = proc.poll() is None
+        detail_lines.append("起動コマンド: {} {}".format(sys.executable, main_py))
+        detail_lines.append("起動後3.5秒生存: {}".format(launch_ok))
+    except Exception:
+        detail_lines.append("起動例外:\n" + traceback.format_exc())
+    finally:
+        if proc is not None and proc.poll() is None:
+            try:
+                proc.terminate()
+                try:
+                    proc.wait(timeout=5)
+                except Exception:
+                    proc.kill()
+                    proc.wait(timeout=5)
+                detail_lines.append("プロセス終了処理: 完了(ゾンビ化なし)")
+            except Exception:
+                detail_lines.append("プロセス終了処理で例外:\n" + traceback.format_exc())
+
+    # --- i18n辞書完全性チェック(旧 --check-i18n / CheckDictionaryCompleteness相当) ---
+    # C#版は隠しCLIフラグ経由でexeを再起動して検査していたが、Python版は
+    # app_py\i18n.py を直接importして辞書を検査するだけで足りる(隠しCLI迂回が
+    # 丸ごと不要になる、DESIGN.md §0-1/§2.4のとおり)。sys.path汚染や他モジュールとの
+    # 名前衝突を避けるため、ファイルパス指定のimportlibで独立ロードする。
+    i18n_ok = False
+    try:
+        i18n_path = os.path.join(APP_PY_DIR, "i18n.py")
+        spec = importlib.util.spec_from_file_location("_shipcheck_app_py_i18n", i18n_path)
+        i18n_mod = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(i18n_mod)
+
+        missing = []
+        for key, values in i18n_mod.TABLE.items():
+            for lang in i18n_mod.LANGS:
+                if not values.get(lang):
+                    missing.append((key, lang))
+        for key, values in i18n_mod.PROGRESS_LABELS.items():
+            for lang in i18n_mod.LANGS:
+                if not values.get(lang):
+                    missing.append((key, lang))
+        i18n_ok = not missing
+        detail_lines.append("i18n完全性チェック: TABLE={}件, PROGRESS_LABELS={}件, 欠落={}件".format(
+            len(i18n_mod.TABLE), len(i18n_mod.PROGRESS_LABELS), len(missing)))
+        if missing:
+            detail_lines.append("  欠落例: {}".format(missing[:20]))
+    except Exception:
+        detail_lines.append("i18n完全性チェック実行例外:\n" + traceback.format_exc())
+
+    status = "PASS" if (launch_ok and i18n_ok) else "FAIL"
+    return dict(name="A3_app_build_launch", status=status, seconds=time.time() - t0,
+                what=what, detail="\n".join(detail_lines))
+
+
+def _gate_a3_app_build_launch_CS_LEGACY(work_root):
+    """退役予定(dev#532統合WP D1でC#資産(app\\DiveToPalworld.cs / build_app.ps1)
+    自体を削除する段になったら、この関数も一緒に削除してよい。TIER_A_GATESからは
+    既に外されており、通常の実行経路からは呼ばれない(参考保存のみ)。"""
     t0 = time.time()
     what = ("アプリ(GUI)がコンパイルでき、起動直後(数秒)に落ちないこと、かつ"
             "隠しCLI --check-i18n(5言語辞書の完全性自己検査)がOKを返すことを守る"

@@ -107,6 +107,100 @@ def test_negative_controls_fail_strict_gate(tmp_path):
         assert fe["class"] == "unclassified", fe
 
 
+# --- dev#532 D1: 新レイアウト(zip直下=Uchinoko.bat/README.txt/res\)の分類 -----
+
+def test_new_layout_generated_root_and_app_sources_first_party():
+    """正: build.py生成のルート2点と、res\\app\\配下のPythonソースはfirst_party。"""
+    att = _attestation()
+    for rel in (STAGE + "/Uchinoko.bat", STAGE + "/README.txt",
+                STAGE + "/res/app/main.py", STAGE + "/res/app/ui/main_window.py"):
+        cls, _lic, note = bp.classify(rel, sha256="0" * 64, attestation=att)
+        assert cls == "first_party", (rel, cls, note)
+
+
+def test_new_layout_app_i18n_json_requires_attestation_hash():
+    """res\\app\\i18n_data.json はattestationのSHA256一致でのみfirst_party。
+    ハッシュ不一致(改変)はunclassified(fail-closed)。"""
+    att = _attestation()
+    ent = att["app_py/i18n_data.json"]
+    cls_ok, _, _ = bp.classify(STAGE + "/res/app/i18n_data.json",
+                               sha256=ent["sha256"], attestation=att)
+    assert cls_ok == "first_party"
+    cls_ng, _, note = bp.classify(STAGE + "/res/app/i18n_data.json",
+                                  sha256="f" * 64, attestation=att)
+    assert cls_ng == "unclassified", note
+
+
+def test_new_layout_python_embed_known_files_third_party():
+    """正: res\\python_embed\\配下のembeddable同梱物(名前完全一致)・Tcl/Tk
+    スクリプト・tkinterパッケージはthird_party、tkinterオーバーレイPEは
+    build.pyのSHA256ピン一致でthird_party。"""
+    att = _attestation()
+    for rel in (STAGE + "/res/python_embed/python311.dll",
+                STAGE + "/res/python_embed/python311._pth",
+                STAGE + "/res/python_embed/tcl/tcl8.6/init.tcl",
+                STAGE + "/res/python_embed/tkinter/__init__.py"):
+        cls, _lic, note = bp.classify(rel, sha256="0" * 64, attestation=att)
+        assert cls == "third_party", (rel, cls, note)
+    # tkinterオーバーレイPE: ピン(app_py\build.py TKINTER_PE_SHA256が正)と一致
+    for name, pin in bp._TKINTER_PE_SHA256.items():
+        cls, _lic, note = bp.classify(STAGE + "/res/python_embed/" + name,
+                                      sha256=pin, attestation=att)
+        assert cls == "third_party", (name, cls, note)
+
+
+def test_new_layout_negative_tkinter_pe_pin_mismatch_unclassified():
+    """負: tkinterオーバーレイPEのSHA256がピンと不一致(すり替え)はunclassified。"""
+    att = _attestation()
+    cls, _, note = bp.classify(STAGE + "/res/python_embed/tcl86t.dll",
+                               sha256="f" * 64, attestation=att)
+    assert cls == "unclassified"
+    assert "ピン" in note, note
+
+
+def test_new_layout_negative_unknown_files_unclassified():
+    """負: 出所不明ファイルの混入(python_embed\\直下・res\\直下・licenses\\配下)は
+    どこに置かれてもunclassified(--strictでFAIL)。ディレクトリcatch-allで
+    素通りさせない(fail-closed)。"""
+    att = _attestation()
+    for rel in (STAGE + "/res/python_embed/evil_unknown.bin",
+                STAGE + "/res/python_embed/extra.dll",
+                STAGE + "/res/mystery.dat",
+                STAGE + "/res/licenses/SMUGGLED.txt",
+                STAGE + "/Uchinoko.exe"):   # 旧exeの再混入もunclassified(ルール削除済み)
+        cls, _lic, note = bp.classify(rel, sha256="0" * 64, attestation=att)
+        assert cls == "unclassified", (rel, cls, note)
+
+
+def test_new_layout_negative_unknown_file_fails_strict_gate(tmp_path):
+    """負の対照(一気通貫): 新レイアウトのステージに出所不明ファイルを混入させ、
+    --strict ゲートが実際にexit 1で止まること。"""
+    stage = tmp_path / "stage"
+    p = stage / "res" / "python_embed" / "evil_unknown.bin"
+    p.parent.mkdir(parents=True, exist_ok=True)
+    p.write_bytes(b"\x00smuggled\x00")
+    out = tmp_path / "ledger.json"
+    rc, log = _run_script(["--stage-dir", str(stage), "--strict",
+                           "--out", str(out)])
+    assert rc == 1, log
+    ledger = json.loads(out.read_text(encoding="utf-8"))
+    assert ledger["summary"]["unclassified"] == 1
+
+
+def test_new_layout_licenses_dir_known_names_classified():
+    """正: res\\licenses\\配下の既知ライセンス文書は宣言どおり分類される。"""
+    att = _attestation()
+    expects = {
+        STAGE + "/res/licenses/UCHINOKO_LICENSE.txt": "first_party",
+        STAGE + "/res/licenses/PYTHON_LICENSE.txt": "third_party",
+        STAGE + "/res/licenses/TCL_TK_LICENSE.txt": "third_party",
+        STAGE + "/res/licenses/THIRD_PARTY_LICENSES.txt": "third_party",
+    }
+    for rel, want in expects.items():
+        cls, _lic, note = bp.classify(rel, sha256="0" * 64, attestation=att)
+        assert cls == want, (rel, cls, note)
+
+
 # --- 正の対照(attestation) ---------------------------------------------------
 
 def test_attestation_all_entries_hash_match_and_classify():
