@@ -2,21 +2,11 @@
 
 DiveToPalworld 本体は **MIT License** です([LICENSE](LICENSE) 参照)。
 
-このファイルは、本体のソースコードおよび**配布フルセット版**に含まれる第三者
-コンポーネントの一覧です。詳細な出所・取得記録は `third_party\SOURCES.md`
-および `third_party\pyooz-0.0.8-source\NOTICE.md` に一次資料として記録しています(本ファイルは
-その要約です。二重管理を避けるため、詳細記述はそちらを正とします)。
-
-**レイアウトについての注記(2026-07-31)**: ソースコードと CI ビルドは、zip
-ルート直下に本体 exe 一式をそのまま置くフラット構成(旧 `_internal\`
-レイアウトを廃止したもの)になっています。**ただし現在配布中の最新リリース
-(v2.2.12)はこの変更より前のビルドであり、引き続き `_internal\` レイアウト
-(トップレベルのランチャー exe + `_internal\Uchinoko.exe`)のままです。**
-フラット構成が実際の配布物に反映されるのは次回リリースからです(AV の検出
-状況が改善していないため、配布を急いでいません。詳細は [SECURITY.md](SECURITY.md)
-の「アンチウイルス誤検知についての開示」を参照)。下表のパス(`assets\tools\`
-等)は新しい構成のものです。旧レイアウトの環境では、いずれも `_internal\`
-配下に読み替えてください。
+このファイルは、本体のソースコードおよび**配布フルセット版**(`Uchinoko.bat` +
+`res\`)に含まれる第三者コンポーネントの一覧です。詳細な出所・取得記録は
+`third_party\SOURCES.md` および `third_party\pyooz-0.0.8-source\NOTICE.md`
+に一次資料として記録しています(本ファイルはその要約です。二重管理を
+避けるため、詳細記述はそちらを正とします)。
 
 ## GPLv3+ コードと MIT 本体の境界(重要)
 
@@ -47,35 +37,28 @@ pyoozのソース(`pyooz-0.0.8-source\`)は、GPLv3の「対応するソース�
 
 ## 配布フルセット版(BOOTH等で配布する zip)にのみ含まれる第三者コンポーネント
 
-以下は「配布 zip」にのみ含まれ、GitHub リポジトリのソースコード自体には含まれません。
-
-| コンポーネント | ライセンス | バージョン | 同梱形態・入手元 |
-|---|---|---|---|
-| Blender Portable(無改変の公式ビルド) | GPL(公式配布に `GPL-3.0-or-later.txt` `GPL-2.0-or-later.txt` 同梱) | 4.3.2 | **配布zipには含まれません**(u54、2026-07-27)。初回起動時に `pipeline\cli\ensure_blender.ps1` が公式サイト [blender.org](https://www.blender.org/download/) から自動的にダウンロードし、`assets\tools\` に配置します(SHA256をピン留めして照合) |
-| pyooz(`ooz.pyd`) | GPLv3+ | 0.0.8 | 差し込み素材のみ `assets\blender_patch\` に同梱し、初回起動時にダウンロードしたBlender同梱 Python 環境へ配置します。対応ソースはリポジトリ内 `third_party\pyooz-0.0.8-source\` にも同梱済み |
-| python3.dll | PSF License | CPython 3.11 相当 | pyooz が stable ABI (`cp38-abi3`) ビルドのため、Blender 同梱 Python(3.11系)向けに別途配置。同上(`assets\blender_patch\` に同梱、初回起動時に配置)。CPython 公式配布物の一部。 https://www.python.org/ |
-| Blender 同梱の各 Python パッケージ(numpy, requests, urllib3, certifi, Cython, autopep8 等) | 各種(MIT/BSD/PSF/Apache 等) | Blender 4.3.2 公式ビルド同梱のまま、無改変 | Blender 公式ビルドに元々含まれるもの(ダウンロードされるBlender本体の一部。配布zip自体には含まれない) |
-| VC++ 再頒布可能ランタイム等 | Microsoft 再頒布可能ランタイムライセンス | — | 配布zipには含まれません。初回起動時にダウンロードするBlender公式ビルド内 `blender.crt\` から `ensure_blender.ps1` がそのまま複製します(新規追加なし) |
-
-配布 zip 内には、ビルド時に動的生成される `THIRD_PARTY_LICENSES.txt`(zip ルート直下)にも
-同様の説明があります。
-
-## Python 版(dev#532、移行中。2026-08-01時点ではまだ出荷経路ではない)
-
-`app\DiveToPalworld.cs`(csc.exe/WinForms)を `app_py\`(Python/tkinter)へ
-全面書き直しする dev#532 が進行中です。この移行が完了するまでは上記の
-「配布フルセット版」表に記載の内容が引き続き実際の出荷物です。移行完了後の
-配布物(`app_py\build.py` がビルド、`packaging\` 配下)には、上記に加えて
-以下の第三者コンポーネントが同梱される設計です。
+配布 zip はルート直下に `Uchinoko.bat` / `README.txt` / `res\` の3点のみを
+置く構成で、`app_py\build.py` がビルドします。以下は「配布 zip」にのみ
+含まれ、GitHub リポジトリのソースコード自体には含まれません。下表のパスは
+展開後のペイロード内でのものです(`res\` が本ツールのアプリケーション
+ルートに相当します)。
 
 | コンポーネント | ライセンス | バージョン | 同梱形態・入手元 |
 |---|---|---|---|
 | Python(embeddable 版、公式ビルド無改変) | PSF License | 3.11.9 | `res\python_embed\` に同梱。python.org の公式 embeddable zip をそのまま展開したもの(`app_py\build.py` が SHA256 をピン留めして取得・照合)。ライセンス全文は配布物の `res\licenses\PYTHON_LICENSE.txt` |
 | Tcl/Tk ランタイム(`_tkinter.pyd` / `tcl86t.dll` / `tk86t.dll` / `tcl8.6` / `tk8.6` スクリプトライブラリ) | Tcl/Tk License(BSD 系) | Python 3.11.9 の公式フルインストーラに同梱されているもの相当 | embeddable 版には含まれないため、python.org の公式フルインストーラを一時的にサイレントインストールして該当ファイルのみを抽出し、embeddable Python へ上書き配置(`app_py\build.py` の `ensure_tkinter_bundle`)。抽出元と同じ Authenticode 署名("CN=Python Software Foundation")を保持していることを確認済み(`packaging\check_signatures.py`)。ライセンス全文は配布物の `res\licenses\TCL_TK_LICENSE.txt` |
+| Blender Portable(無改変の公式ビルド) | GPL(公式配布に `GPL-3.0-or-later.txt` `GPL-2.0-or-later.txt` 同梱) | 4.3.2 | **配布zipには含まれません**。初回起動時に `pipeline\cli\ensure_blender.ps1` が公式サイト [blender.org](https://www.blender.org/download/) から自動的にダウンロードし、`res\assets\tools\` に配置します(SHA256をピン留めして照合) |
+| pyooz(`ooz.pyd`) | GPLv3+ | 0.0.8 | 差し込み素材のみ `res\assets\blender_patch\` に同梱し、初回起動時にダウンロードしたBlender同梱 Python 環境へ配置します。対応ソースはリポジトリ内 `third_party\pyooz-0.0.8-source\` にも同梱済み |
+| python3.dll | PSF License | CPython 3.11 相当 | pyooz が stable ABI (`cp38-abi3`) ビルドのため、Blender 同梱 Python(3.11系)向けに別途配置。差し込み素材は `res\assets\blender_patch\` に同梱し、初回起動時に配置します。組み込み Python(`res\python_embed\`)自体に含まれるものと同一の CPython 公式配布物の一部です。 https://www.python.org/ |
+| Blender 同梱の各 Python パッケージ(numpy, requests, urllib3, certifi, Cython, autopep8 等) | 各種(MIT/BSD/PSF/Apache 等) | Blender 4.3.2 公式ビルド同梱のまま、無改変 | Blender 公式ビルドに元々含まれるもの(ダウンロードされるBlender本体の一部。配布zip自体には含まれない) |
+| VC++ 再頒布可能ランタイム等 | Microsoft 再頒布可能ランタイムライセンス | — | 配布zipには含まれません。初回起動時にダウンロードするBlender公式ビルド内 `blender.crt\` から `ensure_blender.ps1` がそのまま複製します(新規追加なし) |
 
-pyooz(`ooz.pyd`、GPLv3+)の扱いは Python 版でも上表と同一(差し込み素材として
-同梱、対応ソースは `third_party\pyooz-0.0.8-source\` に同梱済み)であり、
-GUI 実装言語の変更による差異はありません。
+配布 zip 内には、ビルド時に動的生成される `res\licenses\THIRD_PARTY_LICENSES.txt`
+にも同様の説明があります。
+
+`packaging\check_signatures.py` による署名検査の詳細(何が自作PE扱いで、何が
+第三者コンポーネントとして許容されるか)は [`CODE_SIGNING_POLICY.md`](CODE_SIGNING_POLICY.md)
+を参照してください。
 
 ## テスト結果に含まれるサンプルアバターのプレビュー画像について
 

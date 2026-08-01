@@ -56,6 +56,42 @@ class BlenderSetupAction(enum.Enum):
     DEV_NOT_FOUND_NO_SCRIPT = "DevNotFoundNoScript"  # 開発チェックアウト等でスクリプトもexeも無い
 
 
+class BlenderSetupProcessHandle:
+    """dev#640: run_ensure_blender_setup_process()が起動したBlenderセットアップ
+    子プロセス(ensure_blender.ps1)への参照を保持し、GUI終了時に黙ってkillできる
+    ようにする。C#版の blenderSetupProc フィールド(L.465)+
+    KillBlenderSetupProcess()(L.1339-1353)の1:1移植。
+
+    呼び出し元(main_window.py)がインスタンスを1つ生成して
+    do_ensure_blender_ready()/run_ensure_blender_setup_process()へ
+    process_handle= として渡すと、プロセス起動中だけ self.proc に
+    subprocess.Popen が入る(完了/失敗後は必ずNoneへ戻る)。
+    kill()はメインスレッド(tkinterのWM_DELETE_WINDOWハンドラ)から
+    ワーカースレッド実行中のプロセスを安全に止めるために使う。"""
+
+    def __init__(self) -> None:
+        self.proc: Optional[subprocess.Popen] = None
+
+    def kill(self) -> None:
+        """KillBlenderSetupProcess() L.1339-1353の移植。プロセスツリーごと
+        taskkillで黙って停止する(確認なし、例外は握りつぶす——ユーザーが
+        明示的に始めた作業ではない裏方処理のため、C#コメントと同じ判断。
+        次回起動時のマーカー検証で自己修復される設計、PR #637本文にも
+        同じ理由付けの記載あり)。プロセスが無ければ何もしない。"""
+        proc = self.proc
+        if proc is None:
+            return
+        try:
+            subprocess.run(
+                ["taskkill", "/T", "/F", "/PID", str(proc.pid)],
+                creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0),
+                capture_output=True,
+                timeout=5,
+            )
+        except Exception:  # noqa: BLE001 -- C#版と同じく確認なし・例外握り潰し
+            pass
+
+
 def asset_sub_dir(app_root: str, name: str) -> str:
     """AssetSubDir() L.1752-1757相当。配布物では assets\\<name>、開発ツリーでは
     直下\\<name> に置かれる二重構成を吸収する。"""
@@ -171,6 +207,7 @@ def run_ensure_blender_setup_process(
     ensure_ps1: str,
     app_root: str,
     on_progress: Optional[Callable[[int, str], None]] = None,
+    process_handle: Optional["BlenderSetupProcessHandle"] = None,
 ) -> Tuple[bool, Optional[str]]:
     """RunEnsureBlenderSetupProcess() L.2107-2169の移植。
     ensure_blender.ps1をフル実行(取得/再パッチ)し、標準出力/エラーの
@@ -178,7 +215,12 @@ def run_ensure_blender_setup_process(
     失敗時は[D2P_BLENDER_SETUP_FAIL]以降の案内文をfail_messageとして返す
     (見つからなければ全出力、それも空ならNone)。
     呼び出し元が再度この関数を呼べば失敗時リトライになる(C#版のリトライボタンと
-    同じ設計: このモジュール自体は再試行ループを持たず、UI側の明示操作に委ねる)。"""
+    同じ設計: このモジュール自体は再試行ループを持たず、UI側の明示操作に委ねる)。
+
+    process_handle(dev#640、任意): 渡された場合、起動直後にPopenを
+    process_handle.procへ登録し、終了時(成功/失敗いずれも)に必ずNoneへ戻す
+    (C#版 blenderSetupProc = proc; ... blenderSetupProc = null; L.2147/2152/2165
+    相当)。GUI終了時にメインスレッドから kill() できるようにするための配線。"""
     try:
         args = [
             _find_pwsh(), "-NoProfile", "-ExecutionPolicy", "Bypass",
@@ -196,6 +238,9 @@ def run_ensure_blender_setup_process(
     except OSError as ex:
         return False, f"ensure_blender.ps1の起動に失敗しました: {ex}"
 
+    if process_handle is not None:
+        process_handle.proc = proc
+
     lines: List[str] = []
     try:
         assert proc.stdout is not None
@@ -212,6 +257,8 @@ def run_ensure_blender_setup_process(
                 on_progress(pct, phase)
     finally:
         proc.wait()
+        if process_handle is not None:
+            process_handle.proc = None
 
     if proc.returncode == 0:
         return True, None
@@ -225,12 +272,17 @@ def run_ensure_blender_setup_process(
 def do_ensure_blender_ready(
     app_root: str,
     on_progress: Optional[Callable[[int, str], None]] = None,
+    process_handle: Optional["BlenderSetupProcessHandle"] = None,
 ) -> Tuple[bool, Optional[str], BlenderSetupAction]:
     """DoEnsureBlenderReady() L.2037-2098の移植。ワーカースレッドで呼ぶ想定で
     あり、ここではUIに一切触れない(呼び出し元がスレッド分離とPostToUi相当の
     中継を担う、DESIGN.md §4.3)。
 
     戻り値: (ok, fail_message, action)。
+
+    process_handle(dev#640、任意): run_ensure_blender_setup_process()へ
+    そのまま転送する。NEED_FULL_SETUP以外の分岐(READY_NO_ACTION/
+    DEV_NOT_FOUND_NO_SCRIPT)は子プロセスを起動しないため関与しない。
 
     WarmSharedCacheOnStartup/WarmBlenderProcessOnStartup相当の後続処理
     (成功後にバニラ準備等をバックグラウンドで撃つ最適化)は本WPのスコープ外
@@ -254,6 +306,6 @@ def do_ensure_blender_ready(
         return False, f"Blenderが見つかりません(開発環境): {blender}", action
     # NEED_FULL_SETUP
     ok, fail_message = run_ensure_blender_setup_process(
-        ensure_ps1, app_root, on_progress=on_progress
+        ensure_ps1, app_root, on_progress=on_progress, process_handle=process_handle
     )
     return ok, fail_message, action

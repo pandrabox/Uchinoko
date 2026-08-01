@@ -47,11 +47,13 @@ if APP_PY_DIR not in sys.path:
 import i18n  # noqa: E402
 from ui.main_window import MainWindow  # noqa: E402
 
-# main_window.py の _register_text/_register_tip 呼び出し回数(2026-08-01時点
-# 実測、`grep -c "self\._register_text(\|self\._register_tip("
-# app_py\ui\main_window.py` = 33)。1箇所でも増減したらこのテストが検出する
-# (旧C#版の「登録数の厳密一致」検査粒度をそのまま踏襲)。
-EXPECTED_REGISTRATION_COUNT = 33
+# main_window.py の _register_text/_register_tip 呼び出し回数(2026-08-01
+# master再実測、`grep -c "self\._register_text(\|self\._register_tip("
+# app_py\ui\main_window.py` = 35)。dev#630(PR #645)がプレビュー枠プレース
+# ホルダ2件(LabelPreviewPlaceholderFront/Side)を新規に_register_text化した
+# ことで33→35へ正当に増加(33はそれ以前の実測値)。1箇所でも増減したら
+# このテストが検出する(旧C#版の「登録数の厳密一致」検査粒度をそのまま踏襲)。
+EXPECTED_REGISTRATION_COUNT = 35
 
 # main_window.py で確認済みのキー割当(widget名 -> i18n key)からスポット
 # チェック対象を選ぶ(全数ではなく代表数点、C#版の「主要ボタンはピンポイントでも

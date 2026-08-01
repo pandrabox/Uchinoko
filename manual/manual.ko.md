@@ -1,7 +1,7 @@
 <!-- TODO(v2.3.0, 2026-08-01): 日本語正本(manual.md)の以下の変更が未反映(訳文未作成)。
-  1) 起動手順: Uchinoko.exe → Uchinoko.bat のダブルクリックに変更。初回の「発行元を確認できません」系警告は「開く」でよい旨を追記
+  [済 2026-08-01 wp/audit-doc-rest] 1) 起動手順: Uchinoko.exe → Uchinoko.bat のダブルクリックに変更。初回の「発行元を確認できません」系警告は「開く」でよい旨を追記
   2) 冒頭に v2.3.0 の見た目変更の注記(ボタン配置と操作手順は従来同一・SSは順次更新)を追加
-  3) Blender手動配置先を res\assets\tools\blender-4.3.2-windows-x64\ に変更(旧v2.2.x以前の場所は括弧書きで併記)
+  [済 2026-08-01 wp/audit-doc-rest] 3) Blender手動配置先を res\assets\tools\blender-4.3.2-windows-x64\ に変更(旧v2.2.x以前の場所は括弧書きで併記)
   4) SmartScreen節を削除し、AV(セキュリティソフト)節を事実記述のみの短文(警告・削除事象の報告があった/v2.3.0はexe非同梱構成/問題時は問合せへ)に書き直し
   5) 言語切替リンク: ko/zh は公開HTML未提供のため非リンクの「準備中」表記に変更 -->
 
@@ -20,10 +20,10 @@ Hierarchy에 있는 자신의 아바타를 드래그하여 Assets 바로 아래�
 **Unity를 종료**합니다.
 ![](img/4.webp)
 
-Uchinoko for Palworld(Uchinoko.exe)를 엽니다.
+Uchinoko for Palworld(Uchinoko.bat)을 더블클릭하여 엽니다. 처음 실행할 때 "게시자를 확인할 수 없습니다" 같은 경고가 표시될 수 있지만, "열기"(또는 "실행")를 선택하여 실행해도 문제없습니다.
 ![](img/1.webp)
 
-**처음 실행할 때만** "초기 설정" 대화 상자가 표시되며, 변환에 필요한 Blender(약 350MB)를 자동으로 다운로드합니다. 회선 환경에 따라 몇 분 정도 걸릴 수 있지만, **그대로 기다려주세요**. 여기서 취소하면 이후의 변환이 모두 실패합니다. 잘 되지 않을 때는 아래의 "문제가 발생했을 때"를 참조해주세요.
+**처음 실행할 때만**, 변환에 필요한 Blender(약 350MB)를 화면 뒤에서 자동으로 다운로드합니다(대화 상자는 표시되지 않습니다). 준비가 끝날 때까지 화면 하단에 "준비 중" 표시가 나타나며, "전체 변환" 등의 버튼은 누를 수 없습니다. 회선 환경에 따라 몇 분 정도 걸릴 수 있지만, **그대로 기다려주세요**. 준비가 끝나기 전에 드래그 앤 드롭해도, 준비가 완료되면 자동으로 처리됩니다. 잘 되지 않을 때는 아래의 "문제가 발생했을 때"를 참조해주세요.
 
 탐색기에서 자신의 아바타 prefab을 Uchinoko for Palworld로 드래그 앤 드롭합니다.
 ![](img/5.webp)
@@ -48,7 +48,7 @@ Uchinoko for Palworld(Uchinoko.exe)를 엽니다.
 1. 인터넷 연결을 확인한 후, Uchinoko for Palworld를 재시작하거나 화면 오른쪽 아래의 "Blender 다시 받기" 버튼을 눌러주세요.
 2. 그래도 실패하는 경우, 수동으로 준비할 수 있습니다.
    1. https://www.blender.org/download/ 에서 Blender 4.3.2의 Windows x64판(Portable/zip)을 다운로드합니다.
-   2. 다운로드한 zip을 압축 해제하고, `blender.exe`가 있는 폴더의 내용을, Uchinoko for Palworld와 같은 위치에 있는 `assets\tools\blender-4.3.2-windows-x64\` 폴더 안에 그대로 복사합니다(**버전에 따라 이 폴더가 `_internal\assets\tools\blender-4.3.2-windows-x64\` 위치에 있을 수 있습니다**. Uchinoko for Palworld와 같은 위치에 `_internal` 폴더가 있는지로 구분할 수 있습니다).
+   2. 다운로드한 zip을 압축 해제하고, `blender.exe`가 있는 폴더의 내용을, Uchinoko.bat과 같은 위치에 있는 `res\assets\tools\blender-4.3.2-windows-x64\` 폴더 안에 그대로 복사합니다(폴더가 없으면 새로 만들어주세요. **v2.2.x 이전 구버전에서는 이 폴더가 실행 파일과 같은 위치의 `assets\tools\blender-4.3.2-windows-x64\` 또는 `_internal\assets\tools\blender-4.3.2-windows-x64\`에 있습니다**).
 
 
 ## Tips

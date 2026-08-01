@@ -2,42 +2,61 @@
 
 *English section is below the Japanese one.*
 
-このリポジトリは、追加のIDEやSDKのインストールなしに、Windows同梱の
-.NET Framework 4.8(`csc.exe`)と PowerShell 7+(`pwsh`)だけでビルドできます。
+現行(v2.3.1)の配布物は `Uchinoko.bat` + 組み込み版 Python(`res\python_embed\`、
+python.org 公式 embeddable ビルド + Tcl/Tk)+ `res\app\`(`app_py\` のソース一式)
+という構成です。ビルドの正本は Python スクリプト `app_py\build.py` で、
+zip 化を行う `build\make_dist.ps1` はそれを呼び出すだけの薄い殻です。
 第三者がこのリポジトリを clone しただけの状態から、配布物の生成まで
 再現できることを目的として、この文書を用意しています。
 
+旧 C#/WinForms 実装(`app\DiveToPalworld.cs` / `app\build_app.ps1`、
+`csc.exe` ビルド)はリポジトリに残っていますが、**現在の配布物のビルド
+対象ではありません**(v2.3.0 で `app_py\` ベースの構成に切り替え済み)。
+
 ## 前提
 
-- Windows 10 / 11(`csc.exe` が `.NET Framework 4.8` に含まれる環境)
-- PowerShell 7+(`pwsh`)
+- Windows 10 / 11
+- Python 3(`app_py\build.py` 自体を実行するインタプリタ。バージョンは
+  問いません)
+- PowerShell 7+(`pwsh`)— 手順2(配布用 zip の作成)でのみ必要。
+  手順1(ペイロードの組み立てのみ)は Python だけで完結します
 - git
+- インターネット接続 — `app_py\build.py` が python.org の embeddable
+  Python zip とフルインストーラ(tkinter 抽出用)を初回実行時に自動取得
+  します(取得後はハッシュ検証つきでローカルキャッシュ、`packaging\_cache\`)
 
-以下の2つは、ライセンス上の理由でリポジトリに同梱できないため、
+以下は、ライセンス上の理由でリポジトリに同梱できないため、
 clone しただけでは揃いません。ビルド前に各自で用意してください。
 
 | 前提物 | 入手元 | 配置方法 |
 |---|---|---|
-| pyooz 0.0.8(`ooz.pyd`) | `pip install pyooz`、またはソースを同梱している `third_party\pyooz-0.0.8-source\pyooz-0.0.8.tar.gz` からビルド | Python 3.13 環境のユーザー site-packages(`pip install` の既定出力先)に入っていれば自動検出されます |
-| python3.dll(Python 3.11、stable ABI リダイレクタ) | 準備不要(ビルドが自動取得する embeddable Python 3.11.9 に含まれるものを使用) | 自動。別のファイルを使う場合のみ環境変数 `D2P_PYTHON311_DLL` にフルパスを設定してください(どの経路でも「フォワード先=python311」検証を通らないとビルドは失敗します) |
+| pyooz 0.0.8(`ooz.pyd`) | `pip install pyooz`、またはソースを同梱している `third_party\pyooz-0.0.8-source\pyooz-0.0.8.tar.gz` からビルド | 既定では Python 3.13 環境のユーザー site-packages(`%APPDATA%\Python\Python313\site-packages\ooz.pyd`、`pip install` の既定出力先)を探します。別の場所にある場合は環境変数 `D2P_OOZ_SITE_PACKAGES` に site-packages ディレクトリのフルパスを設定してください(`app_py\build.py` `_resolve_ooz_pyd()`) |
 
-前提物が揃っていない状態で `build\make_dist.ps1` を実行すると、何が足りないか・
+前提物が揃っていない状態で `app_py\build.py` を実行すると、何が足りないか・
 どこから入手すべきかを明示してビルドを中断します(黙って失敗する設計にはしていません)。
 
-## 手順1: 本体exeだけをビルドする
+## 手順1: 配布ペイロードだけを組み立てる
 
 ```
-pwsh -File app\build_app.ps1
+python app_py\build.py --out <出力先ディレクトリ>
 ```
 
-出力: リポジトリ直下の `Uchinoko.exe`(`app\build_app.ps1` に `-Out` を渡すと
-出力先を変更できます。`app\build_app.ps1:1-8`)。
+出力: 指定したディレクトリ直下に `Uchinoko.bat` / `README.txt` / `res\`
+の3点のみが並ぶ構成(この3点以外が生成された場合、ビルド自体が
+`ROOT_LAYOUT=FAIL` で失敗します)。実行の最後に以下のゲートが
+自動で走り、いずれか1つでも `FAIL` ならビルド全体が失敗として終了します。
 
-**実測で確認済み**: 公開リポジトリ `pandrabox/Uchinoko` を新規に clone した直後の状態
-(追加ファイル無し)から本コマンドを実行しても成功し、`Uchinoko.exe`(PE32 GUI .NET
-assembly)が生成されることを確認しています。この文書の手順をそのまま実行すれば、
-どなたでも同じ結果を再現・検証できます(生成物のサイズはコード量の変化に応じて
-変わるため、ここでは具体的なバイト数は示していません)。
+- `SIGNATURE_GATE` — `packaging\check_signatures.py` による署名検査
+  (詳細: [`CODE_SIGNING_POLICY.md`](CODE_SIGNING_POLICY.md))
+- `BAT_ISOLATION_GATE` — `Uchinoko.bat` が `%~dp0` 相対パスのみを参照し、
+  ホスト環境の PATH 上の Python に依存していないことの検査
+- `PTH_GATE` — 組み込み Python の `._pth` 設定が正しく、実行時の
+  暗黙の `pip`/サイトパッケージ経路が開いていないことの検査
+
+`--fixture` を付けると、`app_py\` 本体の代わりに軽量なスタブアプリを
+使ってビルド一式(組み込み Python の取得・tkinter 抽出・署名検査等)
+だけを素早く検証できます(生成した `Uchinoko.bat` を実際に起動する
+自己テストも自動で走ります)。
 
 ## 手順2: 配布用フルセットzipをビルドする
 
@@ -45,106 +64,103 @@ assembly)が生成されることを確認しています。この文書の手�
 pwsh -File build\make_dist.ps1 -Version vX.Y.Z
 ```
 
-`-Version` は `app\DiveToPalworld.cs` 内の `const string ToolVersion` と一致させる
-必要があります。不一致の場合、ビルド前のバージョン整合チェックがエラーで停止します
-(`build\make_dist.ps1:36-51`)。現在の `ToolVersion` は `app\DiveToPalworld.cs` 内で
-`grep "const string ToolVersion"` すると確認できます。
+`-Version` は `app_py\ui\main_window.py` 内の `TOOL_VERSION` 定数と
+一致させる必要があります。不一致の場合、ビルド前のバージョン整合
+チェックがエラーで停止します。
 
-`make_dist.ps1` は内部で手順1の `app\build_app.ps1` を呼び出すため、
-手順1を個別に実行しておく必要はありません(`build\make_dist.ps1:60-61`)。
+`make_dist.ps1` は内部で手順1の `app_py\build.py`(`--fixture` なし、
+実際の `app_py\` ソースを使用)を呼び出すため、手順1を個別に実行しておく
+必要はありません。
 
-出力: `dist\Uchinoko_for_Palworld_vX.Y.Z_full.zip`。
+出力: `dist\Uchinoko_vX.Y.Z_full.zip`(dev#625(2026-08-01)以降。旧: `Uchinoko_for_Palworld_vX.Y.Z_full.zip`)。
 
-**実測で確認済み**: 上記の前提物を用意した状態で、クリーンな clone から
-`-Version` に `app\DiveToPalworld.cs` の `ToolVersion` と同じ値を渡して実行すると、
-`dist\Uchinoko_for_Palworld_vX.Y.Z_full.zip` が生成されることを確認しています。
-Blenderポータブル本体は配布zipに同梱されず、利用者の初回起動時に公式サイトから
-自動取得される方式(`pipeline\cli\ensure_blender.ps1`)のため、zipサイズは
-本体コードのみを含む数MB程度に収まります。
-
-## 進行中の移行: Python版GUI(dev#532、2026-08-01時点ではまだ出荷経路ではない)
-
-`app\DiveToPalworld.cs`(csc.exe/WinForms)は、dev#532で `app_py\`
-(Python/tkinter)への全面書き直しが進行中です。**2026-08-01時点では
-移行はまだ完了しておらず、上記の手順1・2(csc.exe/pwsh経由のビルド)が
-引き続き唯一の正式な配布経路です。** `csc.exe`(.NET Framework 4.8)と
-PowerShell 7+の前提は、この移行が完了(統合WP=D1完了)するまで変わりません。
-
-移行完了後は本体exeの代わりに `Uchinoko.bat` + 組み込み版Python
-(python.org embeddable、tkinter同梱)を配布する設計です
-(詳細: `work\wp532A\DESIGN.md`)。現時点で移行中のコードを直接動かして
-確認したい場合は以下が使えます(いずれも開発用途、配布物のビルド手順
-としてはまだ確定していません):
-
-```
-python app_py\main.py            # GUIを直接起動して動作確認
-python app_py\build.py --fixture # bat+組み込みPythonのパッケージング試作
-```
-
-この節は、統合WP(D1)が実際に配布経路を切り替えた時点で、上記の手順1・2の
-記述そのものを書き換える形に更新する予定です。
-
-## 未検証の部分(正直に明記します)
-
-- **GitHub Actions 等の hosted runner 上での実行は本文書作成時点では未検証**です。
-  上記の実測はいずれもローカル開発機の `csc.exe` / `pwsh` 環境によるものです。
-  hosted runner 特有の差異(`csc.exe` のパス、`pip install pyooz` の成否等)が
-  生じる可能性があります。
-- `pyooz` の `pip install` がインターネット経由のビルド環境(hosted runner等)でも
-  同様に成功するかは未検証です(開発機では事前にインストール済みの環境で確認しています)。
+Blender ポータブル本体はこの配布zipに同梱されず、利用者の初回起動時に
+公式サイトから自動取得される方式(`pipeline\cli\ensure_blender.ps1`、
+配置先は展開後の `res\assets\tools\`)のため、zipサイズは組み込み
+Python + アプリ本体コードのみを含む数十MB程度に収まります。
 
 ## テストの実行(任意)
 
 このリポジトリには pytest ベースのテストが同梱されています。例:
 
 ```
+python -m pytest app_py\tests -q
+python -m pytest packaging\tests -q
 python -m pytest tests\coverage -q
 ```
 
-一部のテストは Blender / Palworld 実機等の外部依存を必要とします。
-テストごとの前提は `tests\shipcheck\SHIPCHECK.md` を参照してください。
+`app_py\tests` は GUI 本体(`app_py\`)、`packaging\tests` はビルド
+スクリプト自身(署名ゲートの負の対照テスト等)、`tests\coverage` は
+変換パイプラインのカバレッジ試験群です。一部のテストは Blender /
+Palworld 実機等の外部依存を必要とします。テストごとの前提は
+`tests\shipcheck\SHIPCHECK.md` を参照してください。
 
 ---
 
 ## English
 
-This repository can be built without installing any additional IDE or SDK — only
-the .NET Framework 4.8 compiler (`csc.exe`, bundled with Windows) and
-PowerShell 7+ (`pwsh`) are required. This document exists so that a third party can
-reproduce a build starting from nothing more than a clone of this repository.
+The current (v2.3.1) distributable is `Uchinoko.bat` plus an embedded Python
+runtime (`res\python_embed\`, the official python.org embeddable build with
+Tcl/Tk overlaid) and `res\app\` (a copy of the `app_py\` source tree). The
+canonical build script is the Python script `app_py\build.py`; the zip-making
+`build\make_dist.ps1` is a thin shell that just calls it. This document
+exists so that a third party can reproduce a build starting from nothing
+more than a clone of this repository.
+
+The retired C#/WinForms implementation (`app\DiveToPalworld.cs` /
+`app\build_app.ps1`, built with `csc.exe`) still exists in the repository,
+but it is **not part of the current distributable's build** (the project
+switched to the `app_py\`-based build in v2.3.0).
 
 ### Prerequisites
 
-- Windows 10 / 11 (an environment where `csc.exe` is available via `.NET Framework 4.8`)
-- PowerShell 7+ (`pwsh`)
+- Windows 10 / 11
+- Python 3 (any version, used only to run `app_py\build.py` itself)
+- PowerShell 7+ (`pwsh`) — needed only for Step 2 (building the zip). Step 1
+  (assembling the payload) is Python-only
 - git
+- Internet access — `app_py\build.py` downloads the python.org embeddable
+  Python zip and the full installer (used to extract tkinter) the first time
+  it runs (hash-verified, then cached locally under `packaging\_cache\`)
 
-The following two items cannot be bundled in the repository for licensing reasons,
-so a plain clone does not provide them. Obtain them yourself before building.
+The following item cannot be bundled in the repository for licensing
+reasons, so a plain clone does not provide it. Obtain it yourself before
+building.
 
 | Prerequisite | Source | How to place it |
 |---|---|---|
-| pyooz 0.0.8 (`ooz.pyd`) | `pip install pyooz`, or build it from the bundled source at `third_party\pyooz-0.0.8-source\pyooz-0.0.8.tar.gz` | Auto-detected if present in the user site-packages of your Python 3.13 environment (the default `pip install` location) |
-| python3.dll (Python 3.11, stable ABI redirector) | No preparation needed (taken from the embeddable Python 3.11.9 that the build downloads automatically) | Automatic. Only set the `D2P_PYTHON311_DLL` environment variable to a full path if you need a different file (either way, the build fails unless the file passes the "forwards to python311" check) |
+| pyooz 0.0.8 (`ooz.pyd`) | `pip install pyooz`, or build it from the bundled source at `third_party\pyooz-0.0.8-source\pyooz-0.0.8.tar.gz` | By default, looked up under the Python 3.13 user site-packages (`%APPDATA%\Python\Python313\site-packages\ooz.pyd`, the default `pip install` location). If it lives elsewhere, set the `D2P_OOZ_SITE_PACKAGES` environment variable to the full path of the site-packages directory (`app_py\build.py`, `_resolve_ooz_pyd()`) |
 
-If you run `build\make_dist.ps1` without these prerequisites in place, it stops the
-build and tells you exactly what is missing and where to get it (it is not designed
-to fail silently).
+If you run `app_py\build.py` without this prerequisite in place, it stops
+the build and tells you exactly what is missing and where to get it (it is
+not designed to fail silently).
 
-### Step 1: Build only the main executable
+### Step 1: Assemble the distribution payload only
 
 ```
-pwsh -File app\build_app.ps1
+python app_py\build.py --out <output directory>
 ```
 
-Output: `Uchinoko.exe` at the repository root (pass `-Out` to `app\build_app.ps1` to
-change the output location; see `app\build_app.ps1:1-8`).
+Output: a directory containing exactly `Uchinoko.bat` / `README.txt` /
+`res\` at its root (the build itself fails with `ROOT_LAYOUT=FAIL` if
+anything else ends up there). The following gates run automatically at the
+end of the build, and any single `FAIL` fails the whole build:
 
-**Verified by an actual build run**: starting from a fresh clone of the public
-repository `pandrabox/Uchinoko`, with no additional files in place, this command
-succeeds and produces `Uchinoko.exe` (a PE32 GUI .NET assembly). Anyone can
-reproduce and verify this by running the steps in this document as written (the
-exact byte size is not stated here, since it drifts as the code changes).
+- `SIGNATURE_GATE` — the signature check performed by
+  `packaging\check_signatures.py` (see
+  [`CODE_SIGNING_POLICY.md`](CODE_SIGNING_POLICY.md) for details)
+- `BAT_ISOLATION_GATE` — verifies `Uchinoko.bat` only references paths
+  relative to `%~dp0` and does not depend on a Python found via the host's
+  PATH
+- `PTH_GATE` — verifies the embedded Python's `._pth` configuration is
+  correct and does not implicitly open a runtime `pip`/site-packages escape
+  path
+
+Passing `--fixture` swaps in a lightweight stub app in place of the real
+`app_py\` tree, letting you quickly exercise the whole build machinery
+(embeddable Python fetch, tkinter extraction, signature gate, etc.) without
+the full application. It also automatically launches the generated
+`Uchinoko.bat` as a self-test.
 
 ### Step 2: Build the full distribution zip
 
@@ -152,67 +168,36 @@ exact byte size is not stated here, since it drifts as the code changes).
 pwsh -File build\make_dist.ps1 -Version vX.Y.Z
 ```
 
-`-Version` must match `const string ToolVersion` inside `app\DiveToPalworld.cs`.
-If they don't match, the pre-build version-consistency check stops with an error
-(`build\make_dist.ps1:36-51`). You can check the current `ToolVersion` by grepping
-for `const string ToolVersion` in `app\DiveToPalworld.cs`.
+`-Version` must match the `TOOL_VERSION` constant in
+`app_py\ui\main_window.py`. If they don't match, the pre-build
+version-consistency check stops with an error.
 
-`make_dist.ps1` calls Step 1's `app\build_app.ps1` internally, so you do not need to
-run Step 1 separately (`build\make_dist.ps1:60-61`).
+`make_dist.ps1` calls Step 1's `app_py\build.py` internally (without
+`--fixture`, using the real `app_py\` sources), so you do not need to run
+Step 1 separately.
 
-Output: `dist\Uchinoko_for_Palworld_vX.Y.Z_full.zip`.
+Output: `dist\Uchinoko_vX.Y.Z_full.zip` (since dev#625, 2026-08-01; formerly `Uchinoko_for_Palworld_vX.Y.Z_full.zip`).
 
-**Verified by an actual build run**: with the prerequisites above in place, running
-this command from a clean clone with `-Version` set to the same value as
-`ToolVersion` in `app\DiveToPalworld.cs` produces
-`dist\Uchinoko_for_Palworld_vX.Y.Z_full.zip`. The Blender portable build is not
-bundled in the distribution zip — it is fetched automatically from the official site
-on first launch (`pipeline\cli\ensure_blender.ps1`) — which is why the zip, containing
-only the tool's own code, stays a few MB in size.
-
-### Ongoing migration: Python-based GUI (dev#532, not yet the shipping path as of 2026-08-01)
-
-`app\DiveToPalworld.cs` (csc.exe / WinForms) is being rewritten from scratch in
-`app_py\` (Python / tkinter) under dev#532. **As of 2026-08-01 this migration is
-not complete, and Steps 1-2 above (building via csc.exe/pwsh) remain the only
-official distribution path.** The `csc.exe` (.NET Framework 4.8) and
-PowerShell 7+ prerequisites stay unchanged until this migration finishes (the
-integration work package, "D1").
-
-Once migration completes, the plan is to distribute `Uchinoko.bat` plus an
-embedded Python runtime (python.org embeddable build, with tkinter bundled)
-instead of the main executable (see `work\wp532A\DESIGN.md` for details). If
-you want to try the in-progress code directly today, the following works for
-development purposes only — it is not yet the confirmed build procedure for
-the distributable:
-
-```
-python app_py\main.py            # launch the GUI directly to check it works
-python app_py\build.py --fixture # prototype the bat + embedded-Python packaging
-```
-
-This section will be updated to replace Steps 1-2 themselves once the
-integration work package ("D1") actually switches the distribution path over.
-
-### What is not yet verified (stated honestly)
-
-- **Running on a hosted runner such as GitHub Actions has not been verified as of
-  writing this document.** Both measurements above were performed on a local
-  development machine's `csc.exe` / `pwsh` environment. Hosted-runner-specific
-  differences (the path to `csc.exe`, whether `pip install pyooz` succeeds, etc.)
-  may occur.
-- Whether `pip install pyooz` succeeds in an internet-connected CI build
-  environment such as a hosted runner has not been verified (verification so far
-  was done on a machine where it was already installed).
+The Blender portable build is not bundled in this distribution zip — it is
+fetched automatically from the official site on first launch
+(`pipeline\cli\ensure_blender.ps1`, unpacked under `res\assets\tools\` once
+extracted), which is why the zip, containing only the embedded Python
+runtime plus the application's own code, stays on the order of a few tens
+of MB.
 
 ### Running tests (optional)
 
 This repository ships with pytest-based tests. For example:
 
 ```
+python -m pytest app_py\tests -q
+python -m pytest packaging\tests -q
 python -m pytest tests\coverage -q
 ```
 
-Some tests require external dependencies such as a Blender install or a real
-Palworld installation. See `tests\shipcheck\SHIPCHECK.md` for the prerequisites of
-each test.
+`app_py\tests` covers the GUI application itself (`app_py\`),
+`packaging\tests` covers the build script (including negative-control tests
+for the signature gate), and `tests\coverage` is the conversion pipeline's
+coverage test suite. Some tests require external dependencies such as a
+Blender install or a real Palworld installation. See
+`tests\shipcheck\SHIPCHECK.md` for the prerequisites of each test.

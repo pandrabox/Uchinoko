@@ -9,9 +9,9 @@ Thanks for contributing! See CONTRIBUTING.md for details.
 
 ## 動作確認 / How was this verified?
 
-<!-- ビルド手順は BUILD.md を参照してください / See BUILD.md for build instructions -->
-- [ ] `pwsh -File app\build_app.ps1` が成功することを確認した / Confirmed `pwsh -File app\build_app.ps1` succeeds
-- [ ] 関連するテスト(`tests\` 配下)を実行した / Ran relevant tests under `tests\`
+<!-- ビルド手順は packaging\README.md を参照してください / See packaging\README.md for build instructions -->
+- [ ] `python app_py\build.py` が成功することを確認した / Confirmed `python app_py\build.py` succeeds
+- [ ] `python -m pytest app_py\tests -q` が緑であることを確認した / Confirmed `python -m pytest app_py\tests -q` passes
 
 ## チェックリスト / Checklist
 

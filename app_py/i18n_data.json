@@ -84,11 +84,11 @@
     "zhCN": "要中止正在进行的转换吗?"
   },
   "StatusPromptVrm": {
-    "ja": "VRMファイルを入れてください",
-    "en": "Please add a VRM file",
-    "ko": "VRM 파일을 넣어주세요",
-    "zhTW": "請放入 VRM 檔案",
-    "zhCN": "请放入 VRM 文件"
+    "ja": "prefab または VRM ファイルを入れてください",
+    "en": "Please add a prefab or VRM file",
+    "ko": "prefab 또는 VRM 파일을 넣어주세요",
+    "zhTW": "請放入 prefab 或 VRM 檔案",
+    "zhCN": "请放入 prefab 或 VRM 文件"
   },
   "BtnBlenderRetry": {
     "ja": "Blenderを再取得",
@@ -378,11 +378,11 @@
     "zhCN": "{0}失败: {1}"
   },
   "MsgDropVrmOrPrefab": {
-    "ja": ".vrm / .prefab ファイルをドロップしてください",
-    "en": "Please drop a .vrm or .prefab file",
-    "ko": ".vrm / .prefab 파일을 놓아주세요",
-    "zhTW": "請拖放 .vrm 或 .prefab 檔案",
-    "zhCN": "请拖放 .vrm 或 .prefab 文件"
+    "ja": ".prefab / .vrm ファイルをドロップしてください",
+    "en": "Please drop a .prefab or .vrm file",
+    "ko": ".prefab / .vrm 파일을 놓아주세요",
+    "zhTW": "請拖放 .prefab 或 .vrm 檔案",
+    "zhCN": "请拖放 .prefab 或 .vrm 文件"
   },
   "MsgHumanoidJsonNeededBody": {
     "ja": "FBXを使うには、ボーン対応表(humanoid.json)がFBXと同じフォルダに必要です。\n\n作り方:\n1. ツールの unity\\HumanoidMapExporter.cs を\n   Unityプロジェクトの Assets\\Editor\\ に入れる\n2. アバターを選択して メニュー Tools > DiveToPalworld >\n   Export Humanoid Map を実行\n3. 出てきた humanoid.json をFBXと同じフォルダに置く",
@@ -476,11 +476,11 @@
     "zhCN": "没有写入权限"
   },
   "ActionNoWritePermission": {
-    "ja": "Palworldを終了してから再試行するか、Uchinoko.exeを右クリック→「管理者として実行」でお試しください",
-    "en": "Close Palworld and try again, or right-click Uchinoko.exe and choose \"Run as administrator\"",
-    "ko": "팰월드를 종료한 후 다시 시도하거나, Uchinoko.exe를 우클릭하여 「관리자 권한으로 실행」을 시도해보세요",
-    "zhTW": "請先關閉幻獸帕魯後再試一次,或在 Uchinoko.exe 上按右鍵選擇「以系統管理員身分執行」",
-    "zhCN": "请先关闭幻兽帕鲁后再试一次,或在 Uchinoko.exe 上单击右键选择「以管理员身份运行」"
+    "ja": "Palworldを終了してから再試行するか、Uchinoko.batを右クリック→「管理者として実行」でお試しください",
+    "en": "Close Palworld and try again, or right-click Uchinoko.bat and choose \"Run as administrator\"",
+    "ko": "팰월드를 종료한 후 다시 시도하거나, Uchinoko.bat를 우클릭하여 「관리자 권한으로 실행」을 시도해보세요",
+    "zhTW": "請先關閉幻獸帕魯後再試一次,或在 Uchinoko.bat 上按右鍵選擇「以系統管理員身分執行」",
+    "zhCN": "请先关闭幻兽帕鲁后再试一次,或在 Uchinoko.bat 上单击右键选择「以管理员身份运行」"
   },
   "CauseDiskFull": {
     "ja": "ディスクの空き容量が不足しています",
@@ -637,18 +637,18 @@
     "zhCN": "‧转换用 UE 工程: {0}"
   },
   "NoteVrmNotDeleted": {
-    "ja": "元のVRMファイルは削除されません。",
-    "en": "The original VRM file will not be deleted.",
-    "ko": "원본 VRM 파일은 삭제되지 않습니다.",
-    "zhTW": "原始的 VRM 檔案不會被刪除。",
-    "zhCN": "原始的 VRM 文件不会被删除。"
+    "ja": "元のprefab または VRM ファイルは削除されません。",
+    "en": "The original prefab or VRM file will not be deleted.",
+    "ko": "원본 prefab 또는 VRM 파일은 삭제되지 않습니다.",
+    "zhTW": "原始的 prefab 或 VRM 檔案不會被刪除。",
+    "zhCN": "原始的 prefab 或 VRM 文件不会被删除。"
   },
   "NoteReloadVrmToRedo": {
-    "ja": "また使う時はVRMを入れ直して最初からやり直しです。",
-    "en": "To use it again, you'll need to re-add the VRM and start over.",
-    "ko": "다시 사용할 때는 VRM을 다시 넣고 처음부터 다시 진행해야 합니다.",
-    "zhTW": "若之後要再次使用,需要重新放入 VRM 並從頭開始。",
-    "zhCN": "若之后要再次使用,需要重新放入 VRM 并从头开始。"
+    "ja": "また使う時はprefab または VRMを入れ直して最初からやり直しです。",
+    "en": "To use it again, you'll need to re-add the prefab or VRM and start over.",
+    "ko": "다시 사용할 때는 prefab 또는 VRM을 다시 넣고 처음부터 다시 진행해야 합니다.",
+    "zhTW": "若之後要再次使用,需要重新放入 prefab 或 VRM 並從頭開始。",
+    "zhCN": "若之后要再次使用,需要重新放入 prefab 或 VRM 并从头开始。"
   },
   "TitleConfirmDelete": {
     "ja": "削除の確認",
@@ -819,11 +819,11 @@
     "zhCN": "正在运行"
   },
   "MsgSpecifyVrmFile": {
-    "ja": "VRMファイルを指定してください",
-    "en": "Please specify a VRM file",
-    "ko": "VRM 파일을 지정해주세요",
-    "zhTW": "請指定 VRM 檔案",
-    "zhCN": "请指定 VRM 文件"
+    "ja": "prefab または VRM ファイルを指定してください",
+    "en": "Please specify a prefab or VRM file",
+    "ko": "prefab 또는 VRM 파일을 지정해주세요",
+    "zhTW": "請指定 prefab 或 VRM 檔案",
+    "zhCN": "请指定 prefab 或 VRM 文件"
   },
   "StatusPreviewGenerating": {
     "ja": "プレビュー生成中...",
@@ -994,18 +994,18 @@
     "zhCN": "正在加载角色模型..."
   },
   "StatusPromptVrmDnd": {
-    "ja": "VRMファイルを入れてください(D&DでOK)",
-    "en": "Please add a VRM file (drag & drop OK)",
-    "ko": "VRM 파일을 넣어주세요(드래그 앤 드롭 가능)",
-    "zhTW": "請放入 VRM 檔案(可拖放)",
-    "zhCN": "请放入 VRM 文件(可拖放)"
+    "ja": "prefab または VRM ファイルを入れてください(D&DでOK)",
+    "en": "Please add a prefab or VRM file (drag & drop OK)",
+    "ko": "prefab 또는 VRM 파일을 넣어주세요(드래그 앤 드롭 가능)",
+    "zhTW": "請放入 prefab 或 VRM 檔案(可拖放)",
+    "zhCN": "请放入 prefab 或 VRM 文件(可拖放)"
   },
   "StatusPreviewStale": {
-    "ja": "プレビューが古い状態です。「プレビュー更新」を押すか、VRMを入れ直してください(反映後にフル変換が押せます)",
-    "en": "The preview is out of date. Press \"Update Preview\" or re-add the VRM (Full Convert will be enabled once updated)",
-    "ko": "미리보기가 오래된 상태입니다. 「미리보기 업데이트」를 누르거나 VRM을 다시 넣어주세요(반영 후 전체 변환이 가능합니다)",
-    "zhTW": "預覽已過期。請按「更新預覽」或重新放入 VRM(套用後即可進行完整轉換)",
-    "zhCN": "预览已过期。请点击「更新预览」或重新放入 VRM(应用后即可进行完整转换)"
+    "ja": "プレビューが古い状態です。「プレビュー更新」を押すか、prefab または VRMを入れ直してください(反映後にフル変換が押せます)",
+    "en": "The preview is out of date. Press \"Update Preview\" or re-add the prefab or VRM (Full Convert will be enabled once updated)",
+    "ko": "미리보기가 오래된 상태입니다. 「미리보기 업데이트」를 누르거나 prefab 또는 VRM을 다시 넣어주세요(반영 후 전체 변환이 가능합니다)",
+    "zhTW": "預覽已過期。請按「更新預覽」或重新放入 prefab 或 VRM(套用後即可進行完整轉換)",
+    "zhCN": "预览已过期。请点击「更新预览」或重新放入 prefab 或 VRM(应用后即可进行完整转换)"
   },
   "StatusReadyToConvert": {
     "ja": "フル変換できます",
@@ -1153,6 +1153,20 @@
     "ko": "작업 폴더를 어디에도 만들 수 없었습니다.\n\n시도한 위치:\n· {0}\n· {1}\n\n두 위치 모두 쓰기 권한이 없는 것 같습니다. 관리자 권한이 필요한 위치(C:\\Program Files 등)에 설치된 경우, C:\\Uchinoko 같은 쓰기 가능한 위치로 이동한 후 다시 시도해주세요.",
     "zhTW": "無法在任何位置建立工作資料夾。\n\n已嘗試的位置:\n‧{0}\n‧{1}\n\n這兩個位置似乎都沒有寫入權限。如果安裝在需要管理員權限的位置(例如 C:\\Program Files),請移動到可寫入的位置(例如 C:\\Uchinoko)後再試一次。",
     "zhCN": "无法在任何位置创建工作文件夹。\n\n已尝试的位置:\n‧{0}\n‧{1}\n\n这两个位置似乎都没有写入权限。如果安装在需要管理员权限的位置(例如 C:\\Program Files),请移动到可写入的位置(例如 C:\\Uchinoko)后再试一次。"
+  },
+  "LabelPreviewPlaceholderFront": {
+    "ja": "(プレビュー:正面)",
+    "en": "(preview front)",
+    "ko": "(미리보기: 정면)",
+    "zhTW": "(預覽:正面)",
+    "zhCN": "(预览:正面)"
+  },
+  "LabelPreviewPlaceholderSide": {
+    "ja": "(プレビュー:側面)",
+    "en": "(preview side)",
+    "ko": "(미리보기: 측면)",
+    "zhTW": "(預覽:側面)",
+    "zhCN": "(预览:侧面)"
   },
   "_progress_labels": {
     "Preparing": {

@@ -1,7 +1,7 @@
 <!-- TODO(v2.3.0, 2026-08-01): 日本語正本(manual.md)の以下の変更が未反映(訳文未作成)。
-  1) 起動手順: Uchinoko.exe → Uchinoko.bat のダブルクリックに変更。初回の「発行元を確認できません」系警告は「開く」でよい旨を追記
+  [済 2026-08-01 wp/audit-doc-rest] 1) 起動手順: Uchinoko.exe → Uchinoko.bat のダブルクリックに変更。初回の「発行元を確認できません」系警告は「開く」でよい旨を追記
   2) 冒頭に v2.3.0 の見た目変更の注記(ボタン配置と操作手順は従来同一・SSは順次更新)を追加
-  3) Blender手動配置先を res\assets\tools\blender-4.3.2-windows-x64\ に変更(旧v2.2.x以前の場所は括弧書きで併記)
+  [済 2026-08-01 wp/audit-doc-rest] 3) Blender手動配置先を res\assets\tools\blender-4.3.2-windows-x64\ に変更(旧v2.2.x以前の場所は括弧書きで併記)
   4) SmartScreen節を削除し、AV(セキュリティソフト)節を事実記述のみの短文(警告・削除事象の報告があった/v2.3.0はexe非同梱構成/問題時は問合せへ)に書き直し
   5) 言語切替リンク: ko/zh は公開HTML未提供のため非リンクの「準備中」表記に変更 -->
 
@@ -20,10 +20,10 @@
 **結束 Unity**。
 ![](img/4.webp)
 
-開啟 Uchinoko for Palworld(Uchinoko.exe)。
+雙擊開啟 Uchinoko for Palworld(Uchinoko.bat)。首次執行時可能會出現「無法確認發行者」之類的警告,選擇「開啟」(或「執行」)繼續啟動即可,沒有問題。
 ![](img/1.webp)
 
-**僅第一次啟動時**,會顯示「首次設定」對話方塊,自動下載轉換所需的 Blender(約 350MB)。依網路環境不同可能需要數分鐘,請**耐心等待**。若在此處取消,之後的轉換將全部失敗。若進行不順利,請參考下方的「發生問題時」。
+**僅第一次啟動時**,會在畫面背後自動下載轉換所需的 Blender(約 350MB)(不會顯示對話方塊)。準備完成前,畫面下方會顯示「準備中」,「完整轉換」等按鈕將無法點選。依網路環境不同可能需要數分鐘,請**耐心等待**。即使在準備完成前拖放檔案,準備完成後也會自動處理。若進行不順利,請參考下方的「發生問題時」。
 
 從檔案總管將自己角色模型的 prefab 檔案拖放到 Uchinoko for Palworld 上。
 ![](img/5.webp)
@@ -48,7 +48,7 @@
 1. 請先確認網路連線,然後重新啟動 Uchinoko for Palworld,或按下畫面右下角的「重新取得 Blender」按鈕。
 2. 若仍然失敗,可以手動準備。
    1. 從 https://www.blender.org/download/ 下載 Blender 4.3.2 的 Windows x64 版(Portable/zip)。
-   2. 解壓縮下載的 zip,將內含 `blender.exe` 的資料夾內容,直接複製到與 Uchinoko for Palworld 同一位置的 `assets\tools\blender-4.3.2-windows-x64\` 資料夾中(**依版本不同,此資料夾可能位於 `_internal\assets\tools\blender-4.3.2-windows-x64\`**。可透過 Uchinoko for Palworld 同一位置是否存在 `_internal` 資料夾來判斷)。
+   2. 解壓縮下載的 zip,將內含 `blender.exe` 的資料夾內容,直接複製到與 Uchinoko.bat 同一位置的 `res\assets\tools\blender-4.3.2-windows-x64\` 資料夾中(若資料夾不存在請自行新建。**在 v2.2.x 及更早的舊版本中,此資料夾位於執行檔同一位置的 `assets\tools\blender-4.3.2-windows-x64\` 或 `_internal\assets\tools\blender-4.3.2-windows-x64\`**)。
 
 
 ## Tips

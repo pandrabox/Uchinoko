@@ -1,23 +1,20 @@
-"""devtools\\pub_overlay\\.github\\workflows\\build.yml (公開repo用CIビルドワークフロー)の
+"""devtools\\pub_overlay\\.github\\workflows\\build.yml (公開repo用CIワークフロー)の
 取得物固定の静的検査。
 
-SignPathのOrigin Verificationが懸念する「ビルドスクリプトが任意のソフトウェアを
-取得しうる」への対策として、build.ymlは以下を固定している:
-  1. pyooz (ooz.pyd) の取得: バージョン固定 + 取得後のSHA256検証
-  2. python.org embeddable zip (python3.dll) の取得: SHA256検証
-  3. 使用しているGitHub Actions(actions/checkout, actions/upload-artifact)を
-     浮動タグではなくコミットSHAで固定
+2026-08-01(dev#573): D1(dev#532)のpy版切替に追随してbuild.ymlを全面書き換え、
+フル配布ビルド(csc.exeビルド/ooz.pyd・python3.dll取得/make_dist.ps1実行/署名候補
+exeのハッシュ計算・artifact upload/GitHub Release自動作成)を意図的に削除して
+「軽量な健全性確認」(python構文チェック+軽いユニットテスト)のみへ縮小した
+(再設計の要否はdev#636で追跡)。そのため、旧来ここで検査していたpyooz/python3.dll
+固定に関する試験は対象ステップごと消滅した。
 
-ここでの検査はYAML構造として壊れていないか・固定に必要な要素が揃っているかを機械的に
-検査する(実行を伴わない静的検査)。実際に取得ステップを実行してのEXIT=0/EXIT=1の実証
-(正の対照・負の対照)は開発側の記録に残っている
-(ローカルでbuild.ymlの run: ブロックを逐語コピーして、正しいハッシュではEXIT=0、
-1文字破壊した偽ハッシュではEXIT=1になることを実機確認済み)。
+引き続き価値がある「利用するGitHub Actions自体をコミットSHAで固定する」
+(サプライチェーン改竄耐性)方針は健全性確認ジョブでも継続しているため、
+ここではそれだけを検査する(実行を伴わない静的検査)。
 """
 import re
 from pathlib import Path
 
-import pytest
 import yaml
 
 WORKFLOW_PATH = (
@@ -37,11 +34,6 @@ def _load_yaml():
     return yaml.safe_load(_load_raw_text())
 
 
-def _steps():
-    data = _load_yaml()
-    return data["jobs"]["build"]["steps"]
-
-
 def _uses_action_refs(text: str):
     """`uses: actions/<name>@<ref>` の <name> と <ref> を全件抽出する。
     コメント行(#で始まる行)は除外する(署名雛形ブロック内のuses:を誤検出しないため)。
@@ -57,17 +49,15 @@ def _uses_action_refs(text: str):
     return refs
 
 
-# --- 受入ゲート2: Actionsがコミット SHA で固定されている -----------------------------
+# --- 受入ゲート1: Actionsがコミット SHA で固定されている -----------------------------
 
 def test_all_actions_uses_are_pinned_to_full_commit_sha():
     text = _load_raw_text()
     refs = _uses_action_refs(text)
-    # WP(2026-07-31、#394/#414のマージに追随): ランチャーexe廃止で署名候補artifactが
-    # 1本になり、upload-artifactの実ステップは2件(本体exe/zip)に減った
-    # (checkout 1件 + upload-artifact 2件 = 最低3件を期待)。
-    assert len(refs) >= 3, (
-        "actions/* の uses: 参照が想定より少ない(checkout 1件 + "
-        "upload-artifact 2件 = 最低3件を期待): {}".format(refs))
+    # dev#573: 軽量ヘルスチェックに縮小後は checkout + setup-python の2件のみ。
+    assert len(refs) == 2, (
+        "actions/* の uses: 参照数が想定と異なる(checkout 1件 + "
+        "setup-python 1件 = 2件を期待): {}".format(refs))
     for name, ref in refs:
         assert _FULL_SHA_RE.match(ref), (
             "actions/{}@{} がコミットSHAで固定されていない"
@@ -97,117 +87,39 @@ def test_negative_control_regex_rejects_floating_tag_reference():
 
 
 def test_checkout_action_is_actions_checkout_pinned_to_known_sha():
-    """2026-07-31にgh apiで実際に解決したSHA(v4 == v4.4.0)であることを固定的に検査する。
-    (`gh api repos/actions/checkout/git/refs/tags/v4` の実測値、推測ではない)"""
+    """gh apiで実際に解決したSHA(v4 == v4.4.0)であることを固定的に検査する。
+    (`gh api repos/actions/checkout/git/refs/tags/v4.4.0` の実測値、推測ではない)"""
     text = _load_raw_text()
     assert "actions/checkout@11d5960a326750d5838078e36cf38b85af677262" in text, (
         "actions/checkoutの固定SHAが期待値と異なる(gh apiで再解決した場合は"
         "テストとドキュメント両方を更新すること)")
 
 
-def test_upload_artifact_action_is_pinned_to_known_sha_in_all_places():
-    """2026-07-31にgh apiで実際に解決したSHA(v4 == v4.6.2)であることを固定的に検査する。
-
-    WP(2026-07-31、#394/#414のマージに追随): ランチャーexe廃止で署名候補artifactが
-    1本になったため、upload-artifactの実ステップは2件(本体exe/zip)。旧期待値3件
-    (ランチャー/本体/zip)から変更。"""
+def test_setup_python_action_is_pinned_to_known_sha():
+    """gh apiで実際に解決したSHA(v5 == v5.6.0)であることを固定的に検査する。
+    (`gh api repos/actions/setup-python/git/refs/tags/v5.6.0` の実測値、
+    2026-08-01時点でv5タグが指すコミットと同一。dev#573で新規追加)。"""
     text = _load_raw_text()
-    count = text.count("actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02")
-    assert count == 2, (
-        "actions/upload-artifactの固定SHA参照が2件(本体/zip)"
-        "見つからない(実際: {}件)".format(count))
+    assert "actions/setup-python@a26af69be951a213d495a4c3e4e4022e16d87065" in text, (
+        "actions/setup-pythonの固定SHAが期待値と異なる(gh apiで再解決した場合は"
+        "テストとドキュメント両方を更新すること)")
 
 
-# --- 受入ゲート1: pyoozの取得ステップがバージョン+SHA256を固定し、不一致で失敗する ---------
+# --- 受入ゲート2: 旧pyooz/python3.dll固定ステップが残っていない(負の対照) --------------
 
-def _pyooz_step_run() -> str:
-    steps = _steps()
-    step = next(s for s in steps if "pyooz" in s.get("name", "").lower())
-    return step["run"]
-
-
-def test_pyooz_step_pins_a_specific_version():
-    run = _pyooz_step_run()
-    assert re.search(r'pyooz==\$PyoozVersion|pyooz==0\.0\.8', run), (
-        "pyoozステップがバージョンを固定していない(pip download pyoozだけだと"
-        "常に最新版を取得してしまい、Origin Verificationの懸念そのもの)")
-    assert re.search(r'\$PyoozVersion\s*=\s*"0\.0\.8"', run), (
-        "pyoozの固定バージョン変数(0.0.8)が見つからない")
+def test_pyooz_and_python3dll_pinning_steps_are_gone():
+    """dev#573でフル配布ビルドを行わなくなったため、これらの取得・SHA256固定
+    ステップ自体が不要になった。復活していないことの回帰確認。"""
+    text = _load_raw_text()
+    for token in ("PyoozVersion", "PyoozSha256", "PyEmbedSha256", "pyooz==0.0.8"):
+        assert token not in text, (
+            "pyooz/python3.dll固定ステップの痕跡が残っている(dev#573で削除済みのはず): "
+            "{!r}".format(token))
 
 
-def test_pyooz_step_verifies_sha256_and_fails_on_mismatch():
-    run = _pyooz_step_run()
-    assert re.search(r'\$PyoozSha256\s*=\s*"[0-9a-f]{64}"', run), (
-        "pyoozの固定SHA256(64桁16進)が見つからない")
-    assert "Get-FileHash" in run and "SHA256" in run, (
-        "pyoozステップがGet-FileHashでSHA256を算出していない")
-    # 「比較して不一致ならexit 1」という制御フローが実在することを確認する。
-    # (単にハッシュ値を変数に持っているだけで比較していない、という誤魔化しを防ぐ)
-    mismatch_block = re.search(
-        r'if\s*\(\$actualHash\s*-ne\s*\$PyoozSha256\)\s*\{[^}]*exit 1', run)
-    assert mismatch_block, (
-        "pyoozステップにSHA256不一致時のexit 1分岐が見つからない"
-        "(検証コードがあっても失敗させなければ誤魔化しの緑になる)")
+# --- 受入ゲート3: 既存のトリガ・YAML構造を壊していない(回帰確認) -----------------------------
 
-
-def test_pyooz_step_pins_expected_wheel_filename():
-    run = _pyooz_step_run()
-    assert "pyooz-0.0.8-cp38-abi3-win_amd64.whl" in run, (
-        "pyoozの想定wheelファイル名が固定されていない"
-        "(バージョン固定が実際に効いているかの二重チェック)")
-
-
-# --- 受入ゲート1: python3.dllの取得ステップがSHA256を固定し、不一致で失敗する ---------------
-
-def _python3dll_step_run() -> str:
-    steps = _steps()
-    step = next(s for s in steps if "python3.dll" in s.get("name", "") and "run" in s)
-    return step["run"]
-
-
-def test_python3dll_step_verifies_sha256_and_fails_on_mismatch():
-    run = _python3dll_step_run()
-    assert re.search(r'\$PyEmbedSha256\s*=\s*"[0-9a-f]{64}"', run), (
-        "python3.dll取得ステップの固定SHA256(64桁16進)が見つからない")
-    assert "Get-FileHash" in run and "SHA256" in run, (
-        "python3.dllステップがGet-FileHashでSHA256を算出していない")
-    mismatch_block = re.search(
-        r'if\s*\(\$actualHash\s*-ne\s*\$PyEmbedSha256\)\s*\{[^}]*exit 1', run)
-    assert mismatch_block, (
-        "python3.dllステップにSHA256不一致時のexit 1分岐が見つからない")
-
-
-def test_python3dll_step_still_sets_expected_env_var_after_verification():
-    """検証ステップを追加したことで既存の動作(D2P_PYTHON311_DLL設定)を
-    壊していないことの回帰確認。"""
-    run = _python3dll_step_run()
-    assert "D2P_PYTHON311_DLL" in run
-    assert "GITHUB_ENV" in run
-
-
-# --- 負の対照: 検査ロジック自体がハッシュ検証の欠落を検出できることの自己検査 -----------------
-
-def test_negative_control_missing_hash_check_is_detected_by_the_assertion_logic():
-    """検査ロジックの空振りを防ぐための負の対照。SHA256検証もexit 1分岐も無い
-    「固定なし」の擬似run:ブロックを用意し、上と同じ正規表現アサーションが
-    確実に失敗する(=欠落を検出できる)ことを確認する。"""
-    unpinned_fake_run = (
-        '$dlDir = Join-Path $env:RUNNER_TEMP "pyooz_dl"\n'
-        'python -m pip download --no-deps --no-cache-dir -d $dlDir pyooz\n'
-        '$whl = Get-ChildItem $dlDir -Filter "pyooz-*.whl" | Select-Object -First 1\n'
-    )
-    assert re.search(r'\$PyoozSha256\s*=\s*"[0-9a-f]{64}"', unpinned_fake_run) is None
-    assert "Get-FileHash" not in unpinned_fake_run
-    mismatch_block = re.search(
-        r'if\s*\(\$actualHash\s*-ne\s*\$PyoozSha256\)\s*\{[^}]*exit 1', unpinned_fake_run)
-    assert mismatch_block is None, (
-        "負の対照が機能していない: ハッシュ検証の無い擬似コードが誤って"
-        "「検証あり」と判定されている")
-
-
-# --- 受入ゲート5: 既存のトリガ・YAML構造を壊していない(回帰確認) -----------------------------
-
-def test_workflow_still_parses_and_retains_all_four_triggers():
+def test_workflow_still_parses_and_retains_three_triggers():
     data = _load_yaml()
     on_key = "on" if "on" in data else True
     triggers = data[on_key]
@@ -218,14 +130,13 @@ def test_workflow_still_parses_and_retains_all_four_triggers():
     assert "pull_request" in triggers
 
 
-def test_signpath_signing_block_still_commented_out():
-    """署名雛形のuses: actions/upload-artifact@v4 (末尾コメント内)まで誤って
-    SHA固定してしまっていないか、かつコメントアウト状態が保たれているかの回帰確認。
-    WP34(2026-07-31)でアクション参照を正しい名前(signpath/...@v2)へ修正したため、
-    期待文字列もそれに追随している。"""
-    text = _load_raw_text()
-    for line in text.splitlines():
-        if "signpath/github-action-submit-signing-request" in line:
-            assert line.lstrip().startswith("#")
+def test_signpath_signing_block_is_absent():
+    """dev#573: SignPath連携の雛形(コメントアウト済みsignジョブ)は
+    py版に自作PEが存在しないため削除した(再設計はdev#636で追跡)。
+    signジョブ・SIGNPATH_API_TOKENがコメント外に紛れ込んでいないことも確認する。"""
     data = _load_yaml()
     assert "sign" not in data["jobs"]
+    text = _load_raw_text()
+    for line in text.splitlines():
+        if "SIGNPATH_API_TOKEN" in line:
+            assert line.lstrip().startswith("#")

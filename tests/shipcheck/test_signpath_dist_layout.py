@@ -202,8 +202,10 @@ def built_dist_zip():
         cwd=REPO_ROOT, capture_output=True, text=True, encoding="utf-8",
         errors="replace", timeout=600,
     )
+    # dev#625(2026-08-01): make_dist.ps1の出力名短縮に追随
+    # (Uchinoko_for_Palworld_<v>_full.zip -> Uchinoko_<v>_full.zip)。
     zip_path = os.path.join(REPO_ROOT, "dist",
-                             "Uchinoko_for_Palworld_{}_full{}.zip".format(version, suffix))
+                             "Uchinoko_{}_full{}.zip".format(version, suffix))
     if proc.returncode != 0 or not os.path.isfile(zip_path):
         pytest.fail("build\\make_dist.ps1 の実行に失敗した:\nrc={}\n{}".format(
             proc.returncode, (proc.stdout or "") + (proc.stderr or "")))

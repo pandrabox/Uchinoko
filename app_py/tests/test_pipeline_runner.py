@@ -484,6 +484,43 @@ def test_find_exported_fbx_none_when_missing(tmp_path):
 
 
 # ---------------------------------------------------------------------------
+# busyBarモード切替 (dev#602: RunPipeline() L.2602 Continuous /
+# RunUnityExport() L.2678 Marquee / OnUnityExportDone() L.2686 Continuous)
+# ---------------------------------------------------------------------------
+
+
+def test_initial_busy_bar_mode_unity_export_is_indeterminate():
+    """RunUnityExport() L.2677-2679相当: 実進捗マーカーが無い工程は
+    indeterminate(Marquee相当)から開始する。"""
+    assert (
+        pr.initial_busy_bar_mode(pr.PHASE_UNITY_EXPORT)
+        == pr.BUSY_BAR_MODE_INDETERMINATE
+    )
+
+
+def test_initial_busy_bar_mode_pipeline_is_determinate():
+    """RunPipeline() L.2602-2603相当: フル変換は開始直後からdeterminate
+    (Continuous)。C#版はここでMarqueeにしない(##PROGRESS##が直後から
+    流れ続けるため)。"""
+    assert (
+        pr.initial_busy_bar_mode(pr.PHASE_PIPELINE) == pr.BUSY_BAR_MODE_DETERMINATE
+    )
+
+
+def test_initial_busy_bar_mode_unknown_phase_falls_back_to_determinate():
+    """負の対照: 未知のphase文字列(将来の呼び出しミス等)でも安全側の
+    determinateへ倒れること(indeterminateに固定されたまま残るバグを防ぐ)。"""
+    assert pr.initial_busy_bar_mode("something_else") == pr.BUSY_BAR_MODE_DETERMINATE
+
+
+def test_busy_bar_mode_on_marker_is_always_determinate():
+    """AppendLog()の##PROGRESS##到着時相当: マーカーが来た時点で実進捗が
+    分かっているので、常にdeterminateへ戻す(OnUnityExportDone() L.2686と
+    同じ「無条件でContinuousへ」という向き)。"""
+    assert pr.busy_bar_mode_on_marker() == pr.BUSY_BAR_MODE_DETERMINATE
+
+
+# ---------------------------------------------------------------------------
 # 標準出力解析 (AppendLog L.2829-2883相当)
 # ---------------------------------------------------------------------------
 

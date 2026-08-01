@@ -130,6 +130,13 @@ class _FakeSelf:
         # 呼ばれたこと自体だけ記録する。
         self.auto_preview_calls.append(path)
 
+    def _refresh_convert_button_freshness(self) -> None:
+        # 2026-08-01 #635マージ後に判明: _set_vrm_path末尾がdev#613/#617で
+        # このメソッドを呼ぶようになった。本ファイルの関心事はjob.json復元
+        # ロジックのみ(convertButtonの鮮度判定はtest_preview_freshness.pyの
+        # 担当)なので、呼ばれたことだけ許容するno-opにする。
+        pass
+
 
 # ---------------------------------------------------------------------------
 # フィクスチャヘルパー

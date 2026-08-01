@@ -85,6 +85,10 @@ TKINTER_PE_SHA256 = {
 sys.path.insert(0, str(PACKAGING_DIR))
 import check_signatures  # noqa: E402
 
+PIPELINE_PY_DIR = REPO_ROOT / "pipeline" / "py"
+sys.path.insert(0, str(PIPELINE_PY_DIR))
+import vp_core  # noqa: E402  (dev#642: rmtree_robust、read-only施錠済みshared_cache対策)
+
 
 def log(msg: str) -> None:
     print(f"[build.py] {msg}", flush=True)
@@ -609,7 +613,12 @@ License documents are under res\\licenses\\.
 
 def assemble_payload(out_dir: Path, cache_dir: Path, fixture: bool, console: bool) -> None:
     if out_dir.exists():
-        shutil.rmtree(out_dir)
+        # dev#642: out_dir can contain a prior run's res\work\_shared_cache\live_template\
+        # (intentionally read-only locked by vp_core.lock_cache_dir_readonly, e.g. when
+        # .devonly\HumanTest\make_humantest.bat staged this same out_dir and then ran a
+        # real conversion through it). A plain shutil.rmtree hits PermissionError
+        # (WinError 5) on those files; rmtree_robust clears the read-only bit and retries.
+        vp_core.rmtree_robust(out_dir)
     out_dir.mkdir(parents=True)
     res_dir = out_dir / "res"
     res_dir.mkdir()

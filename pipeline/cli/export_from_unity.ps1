@@ -20,10 +20,10 @@ try {
     [Console]::OutputEncoding = [System.Text.Encoding]::UTF8
 } catch {
     $__consoleEncodingOk = $false
-    Write-Host "[警告] [Console]::OutputEncodingの設定に失敗しました(エクスポートは続行します): $($_.Exception.Message)"
+    Write-Host "[WARN] Failed to set [Console]::OutputEncoding (export continues): $($_.Exception.Message)"
 }
-$__consoleEncodingActual = try { [Console]::OutputEncoding.WebName } catch { "(取得失敗)" }
-Write-Host ("Console.OutputEncoding(設定試行後の実値): $__consoleEncodingActual / 設定成功=$__consoleEncodingOk")
+$__consoleEncodingActual = try { [Console]::OutputEncoding.WebName } catch { "(failed to read)" }
+Write-Host ("Console.OutputEncoding (actual value after set attempt): $__consoleEncodingActual / set succeeded=$__consoleEncodingOk")
 
 # ---------------------------------------------------------------------------
 # Unityエディタの解決(dev#22: 「Unity 2022.3インストール済みなのに見つからない」対策)
@@ -110,7 +110,7 @@ function Resolve-D2PUnityEditor([string]$ProjectVersion, [string]$Family) {
         if ($py) {
             $resolverPy = Join-Path $Root "pipeline\py\dep_resolver.py"
             if (Test-Path $resolverPy -PathType Leaf) {
-                Write-Host "依存解決: pipeline\py\dep_resolver.py を使用 (python: $py)"
+                Write-Host "Dependency resolution: using pipeline\py\dep_resolver.py (python: $py)"
                 # EAP=Stopのままだとネイティブコマンドのstderr出力で即死しうる(convert.ps1の既知事象)
                 $prevEAP = $ErrorActionPreference
                 $ErrorActionPreference = "Continue"
@@ -140,13 +140,14 @@ function Resolve-D2PUnityEditor([string]$ProjectVersion, [string]$Family) {
     Write-Host ""
     Write-Host "[dep_resolver] ERROR: could not run the Python resolver (pipeline\py\dep_resolver.py)."
     Write-Host "[dep_resolver] No usable Python was found (searched: $Root\assets\tools, $Root\tools, system PATH), or it failed to start."
-    Write-Host "Blenderの初回セットアップがまだ完了していないため、Unityの探索を実行できません。"
-    Write-Host "先にDiveToPalworldアプリを起動してBlenderの初回セットアップ(自動ダウンロード)を"
-    Write-Host "完了させてから、もう一度お試しください(セットアップ後はこの探索も変換も動きます)。"
-    Write-Host "それでも解決しない場合は、次のファイルにお使いの Unity.exe のフルパスを1行だけ"
-    Write-Host "書いて保存すると、手動指定として最優先で使われます:"
+    Write-Host "Cannot search for Unity yet because the first-time Blender setup has not finished."
+    Write-Host "Please launch the Uchinoko for Palworld app first to complete the first-time Blender"
+    Write-Host "setup (automatic download), then try again (both this search and conversion will work"
+    Write-Host "once setup is done)."
+    Write-Host "If that still does not resolve it, write the full path to your Unity.exe as a single"
+    Write-Host "line in the following file to have it used as the manual override (highest priority):"
     Write-Host "  $UnitySettingsFile"
-    Write-Host "書き方の例: C:\Program Files\Unity\Hub\Editor\2022.3.22f1\Editor\Unity.exe"
+    Write-Host "Example: C:\Program Files\Unity\Hub\Editor\2022.3.22f1\Editor\Unity.exe"
     return $null
 }
 
@@ -157,11 +158,11 @@ if ($ResolveUnityOnly) {
         Write-Host "Unity: $(Format-DiagPath $found)"
         exit 0
     }
-    Write-Error "Unityエディタが見つかりませんでした(上記の探索結果と案内を確認してください) [D2P_UNITY_NOT_FOUND]"
+    Write-Error "Unity editor was not found (check the search results and guidance above) [D2P_UNITY_NOT_FOUND]"
     exit 1
 }
 if (-not $Prefab) {
-    Write-Error "prefabファイルを指定してください(使い方: -Prefab `"C:\...\Assets\...\avatar.prefab`")"
+    Write-Error "Please specify a prefab file (usage: -Prefab `"C:\...\Assets\...\avatar.prefab`")"
     exit 1
 }
 
@@ -170,7 +171,7 @@ if (-not $Prefab) {
 # 後段のJoin-Path等で壊れたパスになる(大崎商会PCでの`ReadAllBytes`失敗の実因)。
 # .ProviderPath はプロバイダ接頭辞なしの素のファイルシステムパスを返すのでこちらを使う。
 $Prefab = (Resolve-Path $Prefab).ProviderPath
-if (-not $Prefab.ToLower().EndsWith(".prefab")) { Write-Error "prefabファイルを指定してください"; exit 1 }
+if (-not $Prefab.ToLower().EndsWith(".prefab")) { Write-Error "Please specify a prefab file"; exit 1 }
 
 # 1) prefabパスからUnityプロジェクトルートを逆算(Assets/ の親)
 $dir = Split-Path $Prefab -Parent
@@ -182,14 +183,14 @@ while ($dir) {
     $dir = $parent
 }
 if (-not $proj -or -not (Test-Path (Join-Path $proj "ProjectSettings\ProjectVersion.txt"))) {
-    Write-Error "Unityプロジェクトが特定できない(prefabはAssets配下にありますか?)"; exit 1
+    Write-Error "Could not identify the Unity project (is the prefab under Assets?)"; exit 1
 }
 $assetRel = $Prefab.Substring($proj.Length + 1).Replace("\", "/")
 # dev#7: $proj(Unityプロジェクトルート)はユーザーが既に知っている場所への案内では
 # なく純粋な診断表示のため伏字化する。$assetRel はプロジェクト相対パスで個人フォルダ名を
 # 含まないためそのまま出す(既存どおり)。
-Write-Host "プロジェクト: $(Format-DiagPath $proj)"
-Write-Host "アセット: $assetRel"
+Write-Host "Project: $(Format-DiagPath $proj)"
+Write-Host "Asset: $assetRel"
 
 # 2) プロジェクトのUnityバージョンが対応系列(2022.3.x)かを確認してから、エディタを探す
 $verLine = (Get-Content (Join-Path $proj "ProjectSettings\ProjectVersion.txt") | Select-String "m_EditorVersion:").Line
@@ -208,17 +209,17 @@ $family = ($projVer -split "\.")[0..1] -join "."
 # ここで理由と対処法を示して確実に止める。($SupportedFamilyの定義は冒頭のresolver節)
 if ($family -ne $SupportedFamily) {
     $msg = @"
-対応していないUnityバージョンのプロジェクトです。
+This project's Unity version is not supported.
 
-このツールが対応しているUnity: $SupportedFamily 系(例: 2022.3.22f1)
-検出されたプロジェクトのUnity: $projVer
-プロジェクト: $(Format-DiagPath $proj)
+Supported Unity for this tool: $SupportedFamily family (e.g. 2022.3.22f1)
+Detected project Unity: $projVer
+Project: $(Format-DiagPath $proj)
 
-どうすればよいですか:
-  1. お使いのアバターのプロジェクトを、VRChat向けの Unity $SupportedFamily 系で開き直してください
-     (VRChat Creator Companion(VCC)で対象プロジェクトのUnityバージョンを変更する、
-      または $SupportedFamily 系の新規プロジェクトを作ってアバター一式を移行してください)
-  2. 開き直した後のプロジェクト内のprefabを指定して、このコマンドをもう一度実行してください
+What to do:
+  1. Reopen your avatar project in a Unity $SupportedFamily family version for VRChat
+     (use VRChat Creator Companion (VCC) to change the project's Unity version,
+      or create a new $SupportedFamily project and migrate your avatar assets into it)
+  2. Specify a prefab in the reopened project and run this command again
 "@
     Write-Error $msg
     exit 1
@@ -229,8 +230,8 @@ if ($family -ne $SupportedFamily) {
 # (冒頭のresolver節。正本 pipeline\py\dep_resolver.py)で解決する。
 $editor = Resolve-D2PUnityEditor -ProjectVersion $projVer -Family $SupportedFamily
 if (-not $editor -or -not (Test-Path $editor)) {
-    Write-Error ("プロジェクトに合うUnity($projVer / $SupportedFamily 系)が見つかりませんでした。`n" +
-        "上記の探索結果(trail)と手動指定の案内を確認してください。 [D2P_UNITY_NOT_FOUND]")
+    Write-Error ("Could not find a matching Unity ($projVer / $SupportedFamily family). `n" +
+        "Check the search results (trail) above and the manual-override guidance. [D2P_UNITY_NOT_FOUND]")
     exit 1
 }
 Write-Host "Unity: $(Format-DiagPath $editor) (project=$projVer)"
@@ -241,8 +242,8 @@ if (Test-Path $lock) {
     try {
         $fs = [IO.File]::Open($lock, "Open", "ReadWrite", "None"); $fs.Close()
     } catch {
-        Write-Error ("このプロジェクトはUnityで開かれています。Unityを閉じてから再実行するか、`n" +
-            "Unityのメニュー Tools > DiveToPalworld > Export Avatar で手動エクスポートしてください")
+        Write-Error ("This project is currently open in Unity. Close Unity and run again, `n" +
+            "or use the Unity menu Tools > DiveToPalworld > Export Avatar to export manually")
         exit 1
     }
 }
@@ -271,12 +272,12 @@ if ($mj -notmatch '"com\.unity\.formats\.fbx"') {
         1
     )
     if ($newMj -eq $mj) {
-        Write-Error "manifest.jsonの`"dependencies`"セクションが見つからず、FBX Exporterを追記できません"
+        Write-Error "Could not find the `"dependencies`" section in manifest.json, so the FBX Exporter could not be added"
         exit 1
     }
     Set-Content -Path $manifestPath -Value $newMj -Encoding utf8 -NoNewline
     $manifestModified = $true
-    Write-Host "FBX Exporter(com.unity.formats.fbx 4.2.1)をmanifest.jsonへ追記しました(初回はDLで時間がかかります)"
+    Write-Host "Added FBX Exporter (com.unity.formats.fbx 4.2.1) to manifest.json (first run may take time to download)"
 }
 
 # 4) エクスポータを注入(冪等)して、ヘッドレスで実行
@@ -296,7 +297,7 @@ try {
     }
     New-Item -ItemType Directory -Force $Out | Out-Null
     $log = Join-Path $Out "unity_export.log"
-    Write-Host "Unityをヘッドレス起動中(初回はインポートで数分かかります)..."
+    Write-Host "Launching Unity in headless mode (first run may take a few minutes for import)..."
     & $editor -batchmode -projectPath $proj -executeMethod DiveToPalworldExporter.ExportBatch `
         -vrm2palPrefab $assetRel -vrm2palOut $Out -quit -logFile $log | Out-Null
     $done = Select-String -Path $log -Pattern "D2P_EXPORT_DONE" -Quiet
@@ -313,23 +314,23 @@ try {
         # 一切拾えていなかった(dev#150: convert.ps1側の同型欠陥と同一パターン)。
         # 抜粋は必ずWrite-Errorより前に、Write-Host(標準出力)で確実に出す。
         # dev#262: 「輸出」表記は「エクスポート」に統一する(2026-07-30)。
-        Write-Host "エクスポート失敗 — ログ参照: $log"
-        Write-Host "--- 失敗箇所の抜粋(前後文脈つき。全文は上記ログファイル) ---"
+        Write-Host "Export failed - see log: $log"
+        Write-Host "--- Excerpt around the failure (full text is in the log file above) ---"
         $excerpt = Select-String -Path $log -Pattern "Exception|error CS" -Context 0,15 |
             Select-Object -First 5
         if ($excerpt) {
             foreach ($m in $excerpt) { Write-Host $m.ToString() }
         } else {
-            Write-Host "(Exception / error CS を含む行が見つかりませんでした。ログ全文を確認してください)"
+            Write-Host "(No lines containing Exception / error CS were found. Check the full log file.)"
         }
-        Write-Host "--- 抜粋ここまで ---"
-        Write-Error "エクスポート失敗(詳細は上記抜粋とログファイルを参照)"
+        Write-Host "--- End of excerpt ---"
+        Write-Error "Export failed (see the excerpt above and the log file for details)"
         exit 1
     }
     Write-Host ""
-    Write-Host "エクスポート完了: $Out"
+    Write-Host "Export complete: $Out"
     Get-ChildItem $Out | Select-Object Name, Length | Format-Table -AutoSize
-    Write-Host "この中のFBXをDiveToPalworldへD&Dしてください"
+    Write-Host "Drag and drop the FBX inside this folder into Uchinoko for Palworld"
 }
 finally {
     # プロジェクトへの痕跡を必ず消す(Unityが失敗・タイムアウト・例外いずれでもここを通る)

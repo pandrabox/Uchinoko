@@ -1,5 +1,6 @@
 # -*- coding: utf-8 -*-
 """devtools/eventbus/sweep.py の単体テスト。実ネットワーク・実DBなし。"""
+import json
 import sqlite3
 import sys
 from datetime import datetime, timedelta, timezone
@@ -493,6 +494,28 @@ class TestGhInboxDbSync:
 
 
 # ---------------------------------------------------------------------------
+# dev#659: タイムスタンプ解析(ミリ秒付き/無し両方を許容)
+# ---------------------------------------------------------------------------
+
+class TestParseSupportTimestamp:
+    def test_parses_without_milliseconds(self):
+        dt = sweep._parse_support_timestamp("2026-08-01T06:01:49Z")
+        assert dt == datetime(2026, 8, 1, 6, 1, 49, tzinfo=timezone.utc)
+
+    def test_parses_with_milliseconds_dev659_real_api_format(self):
+        """dev#659根因: report.osakishokai.com が実際に返す書式
+        ("2026-08-01T06:01:49.584Z")。旧実装は無条件でValueErrorだった。"""
+        dt = sweep._parse_support_timestamp("2026-08-01T06:01:49.584Z")
+        assert dt == datetime(2026, 8, 1, 6, 1, 49, 584000, tzinfo=timezone.utc)
+
+    def test_negative_control_garbage_still_raises(self):
+        """負の対照: 壊れた文字列は許容フォーマットを両方試しても依然として
+        ValueError(呼び出し側の安全側フォールバックが引き続き機能する)。"""
+        with pytest.raises(ValueError):
+            sweep._parse_support_timestamp("not-a-timestamp")
+
+
+# ---------------------------------------------------------------------------
 # dev#507: サポートinbox新着検知(4時間未満は例外なく対象外というぱん裁定込み)
 # ---------------------------------------------------------------------------
 
@@ -535,6 +558,25 @@ class TestSupportNewDetection:
     def test_missing_id_is_skipped(self):
         now = datetime(2026, 8, 1, 12, 0, tzinfo=timezone.utc)
         items = [{"status": "new", "lastAt": "2026-08-01T00:00:00Z"}]
+        assert sweep.detect_support_new_events(items, now) == []
+
+    def test_millisecond_lastAt_is_detected_dev659_regression(self):
+        """dev#659根因の回帰テスト: report.osakishokai.com の実レスポンスはlastAtに
+        ミリ秒が付く("2026-08-01T06:01:49.584Z")。旧実装はこの書式で必ずValueErrorに
+        なり、全item(常にミリ秒付き)が無音でスキップされ続けていた
+        (2026-08-01実測: /admin/unanswered の4件すべてがミリ秒付きだった)。"""
+        now = datetime(2026, 8, 1, 12, 0, tzinfo=timezone.utc)
+        items = [{"id": "HV57UZBQ", "status": "new",
+                  "lastAt": "2026-07-31T16:38:30.761Z", "preview": "未応答24h超"}]
+        events = sweep.detect_support_new_events(items, now)
+        assert len(events) == 1
+        assert events[0]["key"] == "support:HV57UZBQ"
+
+    def test_millisecond_lastAt_under_4h_negative_control(self):
+        """負の対照: ミリ秒付きでも4時間未満は従来どおり検知されない。"""
+        now = datetime(2026, 8, 1, 12, 0, tzinfo=timezone.utc)
+        items = [{"id": "TOOFRESH", "status": "new",
+                  "lastAt": "2026-08-01T09:30:00.123Z"}]
         assert sweep.detect_support_new_events(items, now) == []
 
     def test_malformed_lastAt_is_skipped_safely(self):
@@ -597,11 +639,17 @@ class TestRealFetchSupportUnanswered:
         assert calls[0] == ("GET", "/admin/unanswered", {"hours": sweep.SUPPORT_MIN_UNANSWERED_HOURS})
         assert items[0]["preview"] == "本文冒頭"
 
-    def test_returns_empty_list_on_api_failure(self, monkeypatch):
+    def test_raises_best_effort_fetch_error_on_api_failure(self, monkeypatch):
+        """dev#659: 従来は空リストを返すだけで「0件」と区別が付かず無音化していた。
+        全体取得(/admin/unanswered)の失敗はBestEffortFetchErrorとして呼び出し側へ
+        伝播させ、fail-loudなイベント配達につなげる(run_sweep側で検証)。"""
         def fake_api(*a, **kw):
             raise SystemExit("boom")
         monkeypatch.setattr(sweep.support_client, "api", fake_api)
-        assert sweep._real_fetch_support_unanswered() == []
+        with pytest.raises(sweep.BestEffortFetchError) as excinfo:
+            sweep._real_fetch_support_unanswered()
+        assert excinfo.value.source == "support"
+        assert "boom" in excinfo.value.detail
 
     def test_item_detail_failure_falls_back_to_empty_preview(self, monkeypatch):
         def fake_api(method, path, params=None, body=None):
@@ -651,6 +699,17 @@ class TestRunSweepSupportIntegration:
         monkeypatch.setattr(sweep, "_real_fetch_canary_results", lambda d: [])
         monkeypatch.setattr(sweep, "_real_fetch_master_ci_run", lambda: None)
         monkeypatch.setattr(sweep, "_real_disk_free_gb", lambda p: 200.0)
+        # dev#659: このクラスはsupport_new系の挙動だけを検証する。一次応答候補・
+        # 否認キューは無関係の独立した関心事なので、両方とも「候補/否認なし」に
+        # 固定してノイズを消す(固定しないと本物のsupport_client.api()へ実
+        # ネットワークアクセスしてしまい、テストがworktreeの.secrets有無等の
+        # 実環境状態に依存してflakyになる——dev#659のfail-loud化で実際に露見した)。
+        monkeypatch.setattr(sweep, "_real_fetch_first_response_candidates", lambda items: [])
+        monkeypatch.setattr(sweep, "_real_fetch_denied", lambda: [])
+        # dev#hold-watch: このクラスの関心事はsupport_new系のみ。hold PR滞留検知は
+        # 独立した関心事なので固定して無関係のイベントを混入させない(実gh api呼び出し
+        # によるflaky化も防ぐ)。
+        monkeypatch.setattr(sweep, "_real_fetch_hold_prs", lambda: [])
 
     def test_support_new_item_queued_and_say_fires_once_then_suppressed(self, monkeypatch):
         self._patch_non_support_fetches(monkeypatch)
@@ -691,6 +750,222 @@ class TestRunSweepSupportIntegration:
         assert say_calls == []
         queue = common.load_queue()
         assert "support:FRESH001" not in queue
+
+
+# ---------------------------------------------------------------------------
+# dev#659: fail-loud化 — 取得失敗と「0件」の区別、無音の構造的排除
+# ---------------------------------------------------------------------------
+
+class TestFetchErrorEvent:
+    def test_builds_stable_keyed_event_from_error(self):
+        err = sweep.BestEffortFetchError("support", "URLError: name resolution failed")
+        ev = sweep._fetch_error_event(err)
+        assert ev["key"] == "support_fetch_error"
+        assert ev["kind"] == "support_fetch_error"
+        assert ev["urgent"] is True
+        assert "support取得失敗" in ev["summary"]
+        assert "URLError: name resolution failed" in ev["summary"]
+        assert ev["fingerprint"] == "URLError: name resolution failed"
+
+    def test_long_detail_truncated(self):
+        err = sweep.BestEffortFetchError("denied", "x" * 500)
+        ev = sweep._fetch_error_event(err)
+        assert len(ev["fingerprint"]) == sweep.FR_FETCH_ERROR_MSG_LEN
+
+
+class TestRunSweepFailLoudIntegration:
+    """dev#659受入②: support取得失敗時に『support取得失敗』イベントが配達され、
+    正常復帰すれば自然に消えることを、run_sweep()を通じて確認する(負の対照込み)。"""
+
+    @pytest.fixture(autouse=True)
+    def isolated_state(self, tmp_path, monkeypatch):
+        monkeypatch.setenv("EVENTBUS_STATE_DIR", str(tmp_path / "eventbus"))
+        monkeypatch.setenv("EVENTBUS_GH_INBOX_DB", str(tmp_path / "gh_inbox" / "state.db"))
+        yield tmp_path
+
+    def _patch_non_support_fetches(self, monkeypatch):
+        monkeypatch.setattr(sweep, "_real_fetch_issues_and_comments", lambda: ([], []))
+        monkeypatch.setattr(sweep, "_real_fetch_canary_results", lambda d: [])
+        monkeypatch.setattr(sweep, "_real_fetch_master_ci_run", lambda: None)
+        monkeypatch.setattr(sweep, "_real_disk_free_gb", lambda p: 200.0)
+        monkeypatch.setattr(sweep, "_real_fetch_denied", lambda: [])
+        monkeypatch.setattr(sweep, "_real_fetch_hold_prs", lambda: [])
+
+    def test_support_fetch_failure_produces_fail_loud_event(self, monkeypatch):
+        """モックで/admin/unanswered取得を意図的に失敗させ、イベント配達を実測する
+        (実ユーザー・実ネットワークには一切触れない)。"""
+        self._patch_non_support_fetches(monkeypatch)
+
+        def boom():
+            raise sweep.BestEffortFetchError("support", "URLError: mocked network failure")
+        monkeypatch.setattr(sweep, "_real_fetch_support_unanswered", boom)
+
+        summary = sweep.run_sweep()
+        assert summary["urgent"] == 1
+        queue = common.load_queue()
+        assert "support_fetch_error" in queue
+        assert queue["support_fetch_error"].urgent is True
+        assert "support取得失敗" in queue["support_fetch_error"].summary
+        # 取得自体が失敗している間、support_new検知は当然発生しない(道連れにしない)
+        assert not any(e.kind == "support_new" for e in queue.values())
+
+    def test_negative_control_success_with_zero_items_no_fail_event(self, monkeypatch):
+        """負の対照: 取得が成功して0件のときは、fail-loudイベントを出してはならない
+        (「0件」と「取得失敗」を混同しないことの確認)。"""
+        self._patch_non_support_fetches(monkeypatch)
+        monkeypatch.setattr(sweep, "_real_fetch_support_unanswered", lambda: [])
+        monkeypatch.setattr(sweep, "_real_fetch_first_response_candidates", lambda items: [])
+
+        summary = sweep.run_sweep()
+        assert summary["urgent"] == 0
+        queue = common.load_queue()
+        assert "support_fetch_error" not in queue
+
+    def test_recovery_clears_the_fail_loud_event(self, monkeypatch):
+        """失敗の次のsweepで復帰すれば、イベントは自然に消える(merge_into_queueの
+        既存挙動どおり——今回検出されなかったキーは新キューへ引き継がれない)。"""
+        self._patch_non_support_fetches(monkeypatch)
+
+        def boom():
+            raise sweep.BestEffortFetchError("support", "URLError: still down")
+        monkeypatch.setattr(sweep, "_real_fetch_support_unanswered", boom)
+        sweep.run_sweep()
+        assert "support_fetch_error" in common.load_queue()
+
+        monkeypatch.setattr(sweep, "_real_fetch_support_unanswered", lambda: [])
+        monkeypatch.setattr(sweep, "_real_fetch_first_response_candidates", lambda items: [])
+        sweep.run_sweep()
+        assert "support_fetch_error" not in common.load_queue()
+
+    def test_denied_fetch_failure_produces_fail_loud_event(self, monkeypatch):
+        """denied側も同じfail-loud設計であることの確認(support系との一貫性)。"""
+        self._patch_non_support_fetches(monkeypatch)
+        monkeypatch.setattr(sweep, "_real_fetch_support_unanswered", lambda: [])
+        monkeypatch.setattr(sweep, "_real_fetch_first_response_candidates", lambda items: [])
+
+        def boom():
+            raise sweep.BestEffortFetchError("denied", "URLError: mocked network failure")
+        monkeypatch.setattr(sweep, "_real_fetch_denied", boom)
+
+        summary = sweep.run_sweep()
+        assert summary["urgent"] == 1
+        queue = common.load_queue()
+        assert "denied_fetch_error" in queue
+        assert "denied取得失敗" in queue["denied_fetch_error"].summary
+
+
+# ---------------------------------------------------------------------------
+# dev#659: 一次応答候補(dry-run分類)検知 — UchinokoFirstResponse常駐タスクの後継
+# ---------------------------------------------------------------------------
+
+class TestFirstResponseCandidateFetch:
+    def test_eligible_unresolved_candidate_included(self, monkeypatch):
+        def fake_api(method, path, params=None, body=None):
+            assert path == "/admin/item"
+            return {"item": {"replied_at": None, "typicality_score": 3}, "messages": []}
+        monkeypatch.setattr(sweep.support_client, "api", fake_api)
+        items = [{"id": "NEW00001"}]
+        out = sweep._real_fetch_first_response_candidates(items)
+        assert len(out) == 1
+        assert out[0]["id"] == "NEW00001"
+        assert out[0]["kind"] == sweep.support_client.FR_UNRESOLVED
+
+    def test_already_replied_excluded_dev509_double_send_guard(self, monkeypatch):
+        """負の対照: 2通目以降(replied_at登録済み)は分類対象から除外される
+        (dev#509憲章原則2、二重送信防止)。"""
+        def fake_api(method, path, params=None, body=None):
+            return {"item": {"replied_at": "2026-08-01T00:00:00Z", "typicality_score": 3},
+                    "messages": []}
+        monkeypatch.setattr(sweep.support_client, "api", fake_api)
+        out = sweep._real_fetch_first_response_candidates([{"id": "ALREADY1"}])
+        assert out == []
+
+    def test_item_fetch_failure_is_skipped_not_fatal(self, monkeypatch):
+        """個別item取得の失敗はベストエフォート(全体を落とさずスキップするだけ)。
+        dev#659のfail-loud対象は全体取得(/admin/unanswered)のみ。"""
+        def fake_api(*a, **kw):
+            raise SystemExit("boom")
+        monkeypatch.setattr(sweep.support_client, "api", fake_api)
+        out = sweep._real_fetch_first_response_candidates([{"id": "ERR00001"}])
+        assert out == []
+
+    def test_missing_id_skipped(self):
+        assert sweep._real_fetch_first_response_candidates([{"status": "new"}]) == []
+
+
+class TestDetectFirstResponseEvent:
+    def test_negative_control_no_candidates_no_event(self):
+        assert sweep.detect_first_response_event([]) == []
+
+    def test_one_or_more_candidates_produce_single_aggregate_event(self):
+        candidates = [
+            {"id": "NEW00001", "kind": "未解決", "reason": "r1"},
+            {"id": "NEW00002", "kind": "定型で対応不能", "reason": "r2"},
+        ]
+        events = sweep.detect_first_response_event(candidates)
+        assert len(events) == 1
+        ev = events[0]
+        assert ev["key"] == "first_response_candidates"
+        assert ev["urgent"] is True
+        assert "NEW00001" in ev["summary"]
+        assert "NEW00002" in ev["summary"]
+        assert "実送信なし" in ev["summary"]
+
+    def test_fingerprint_changes_when_classification_changes(self):
+        fp1 = sweep.detect_first_response_event(
+            [{"id": "X1", "kind": "未解決", "reason": "r"}])[0]["fingerprint"]
+        fp2 = sweep.detect_first_response_event(
+            [{"id": "X1", "kind": "定型で対応不能", "reason": "r"}])[0]["fingerprint"]
+        assert fp1 != fp2
+
+
+class TestRunSweepFirstResponseIntegration:
+    """dev#659受入④: モックで未応答を仕込み、一次応答候補イベントの配達を実測する
+    (dry-run分類のみ、実送信・実ネットワークは一切行わない)。"""
+
+    @pytest.fixture(autouse=True)
+    def isolated_state(self, tmp_path, monkeypatch):
+        monkeypatch.setenv("EVENTBUS_STATE_DIR", str(tmp_path / "eventbus"))
+        monkeypatch.setenv("EVENTBUS_GH_INBOX_DB", str(tmp_path / "gh_inbox" / "state.db"))
+        yield tmp_path
+
+    def _patch_non_support_fetches(self, monkeypatch):
+        monkeypatch.setattr(sweep, "_real_fetch_issues_and_comments", lambda: ([], []))
+        monkeypatch.setattr(sweep, "_real_fetch_canary_results", lambda d: [])
+        monkeypatch.setattr(sweep, "_real_fetch_master_ci_run", lambda: None)
+        monkeypatch.setattr(sweep, "_real_disk_free_gb", lambda p: 200.0)
+        monkeypatch.setattr(sweep, "_real_fetch_denied", lambda: [])
+        monkeypatch.setattr(sweep, "_real_fetch_hold_prs", lambda: [])
+        monkeypatch.setattr(sweep, "_fire_support_say", lambda: None)
+
+    def test_seeded_unanswered_item_yields_first_response_candidate_event(self, monkeypatch):
+        """未応答を1件仕込む(HV57UZBQ相当)→ support_new検知 + 一次応答候補検知の
+        両方が同じsweepで配達されることを確認する(モックのみ、自動送信は起きない)。"""
+        self._patch_non_support_fetches(monkeypatch)
+        support_item = {"id": "HV57UZBQ", "status": "new",
+                         "lastAt": "2026-07-31T16:38:30.761Z", "preview": "未応答24h超"}
+        monkeypatch.setattr(sweep, "_real_fetch_support_unanswered", lambda: [support_item])
+        monkeypatch.setattr(sweep, "_real_fetch_first_response_candidates",
+                             lambda items: [{"id": "HV57UZBQ", "kind": "未解決", "reason": "r"}])
+        monkeypatch.setattr(common, "now_iso", lambda: "2026-08-01T20:00:00Z")
+
+        summary = sweep.run_sweep()
+        assert summary["urgent"] == 2  # support_new 1件 + first_response_candidates 1件
+        queue = common.load_queue()
+        assert "support:HV57UZBQ" in queue
+        assert "first_response_candidates" in queue
+        assert "HV57UZBQ" in queue["first_response_candidates"].summary
+        assert "実送信なし" in queue["first_response_candidates"].summary
+
+    def test_negative_control_no_unanswered_no_candidate_event(self, monkeypatch):
+        """負の対照: 未応答が無ければ一次応答候補イベントも出ない。"""
+        self._patch_non_support_fetches(monkeypatch)
+        monkeypatch.setattr(sweep, "_real_fetch_support_unanswered", lambda: [])
+        monkeypatch.setattr(sweep, "_real_fetch_first_response_candidates", lambda items: [])
+
+        summary = sweep.run_sweep()
+        assert summary["urgent"] == 0
+        assert "first_response_candidates" not in common.load_queue()
 
 
 # ---------------------------------------------------------------------------
@@ -801,11 +1076,15 @@ class TestRealFetchDenied:
         assert calls[0] == ("GET", "/admin/denied", {"limit": sweep.DENIED_FETCH_LIMIT})
         assert items == [DENIED_ITEM_VLGQR7ES]
 
-    def test_returns_empty_list_on_api_failure(self, monkeypatch):
+    def test_raises_best_effort_fetch_error_on_api_failure(self, monkeypatch):
+        """dev#659: support系と同じfail-loud設計。"""
         def fake_api(*a, **kw):
             raise SystemExit("boom")
         monkeypatch.setattr(sweep.support_client, "api", fake_api)
-        assert sweep._real_fetch_denied() == []
+        with pytest.raises(sweep.BestEffortFetchError) as excinfo:
+            sweep._real_fetch_denied()
+        assert excinfo.value.source == "denied"
+        assert "boom" in excinfo.value.detail
 
 
 class TestFireDeniedSay:
@@ -846,6 +1125,7 @@ class TestRunSweepDeniedIntegration:
         monkeypatch.setattr(sweep, "_real_fetch_master_ci_run", lambda: None)
         monkeypatch.setattr(sweep, "_real_disk_free_gb", lambda p: 200.0)
         monkeypatch.setattr(sweep, "_real_fetch_support_unanswered", lambda: [])
+        monkeypatch.setattr(sweep, "_real_fetch_hold_prs", lambda: [])
 
     def test_two_denied_items_queued_every_sweep_say_fires_once(self, monkeypatch):
         """実在2件相当のフィクスチャが検知され、キューエントリが生成されること。
@@ -897,3 +1177,284 @@ class TestRunSweepDeniedIntegration:
                              lambda: [DENIED_ITEM_Z8XBKJBC, DENIED_ITEM_VLGQR7ES])
         sweep.run_sweep()
         assert say_calls == [1, 2]
+
+
+# ---------------------------------------------------------------------------
+# hold PR滞留(2026-08-01、オーナー懸念「holdラベルのPRが無限に残らないか」への
+# 構造対応): hold:do-not-mergeラベル付きopen PRが48時間超滞留していないかを検知する。
+# 実在の2件(#667/#665、2026-08-01時点でhold中)を模したフィクスチャで検証する。
+# ---------------------------------------------------------------------------
+
+HOLD_PR_667 = {
+    "number": 667, "title": "feat(gui): 起動時DPI awareness宣言+作業領域クランプ(dev#662)",
+    "url": "https://github.com/pandrabox/DiveToPalworld-dev/pull/667",
+    "labels": ["hold:do-not-merge"], "hold_since": "2026-08-01T10:56:09Z",
+}
+
+
+class TestDetectStaleHoldPrs:
+    def test_detects_pr_past_48h_threshold(self):
+        now = datetime(2026, 8, 3, 12, 0, tzinfo=timezone.utc)  # hold_sinceから約49.1h後
+        events = sweep.detect_stale_hold_prs([HOLD_PR_667], now)
+        assert len(events) == 1
+        ev = events[0]
+        assert ev["key"] == "hold_pr:667"
+        assert ev["kind"] == "hold_pr_stale"
+        assert ev["urgent"] is True  # 常設配達(denied_queueと同じ見落とし耐性)
+        assert ev["issue_number"] == 667
+        assert "#667" in ev["summary"]
+        assert HOLD_PR_667["url"] in ev["summary"]
+
+    def test_negative_control_under_48h_not_detected(self):
+        """負の対照: ラベル付与から48時間未満のPRは検知されない。"""
+        now = datetime(2026, 8, 2, 0, 0, tzinfo=timezone.utc)  # hold_sinceから約13h後
+        assert sweep.detect_stale_hold_prs([HOLD_PR_667], now) == []
+
+    def test_exactly_48h_boundary_is_detected(self):
+        pr = dict(HOLD_PR_667, hold_since="2026-08-01T00:00:00Z")
+        now = datetime(2026, 8, 3, 0, 0, tzinfo=timezone.utc)  # ちょうど48h後
+        assert len(sweep.detect_stale_hold_prs([pr], now)) == 1
+
+    def test_negative_control_no_hold_label_not_detected(self):
+        """負の対照: hold:do-not-mergeラベルが無ければ、何時間経過していても検知しない
+        (多層防御: 呼び出し側の絞り込み漏れをこの関数単体でも防ぐ)。"""
+        now = datetime(2026, 8, 10, 12, 0, tzinfo=timezone.utc)
+        pr = dict(HOLD_PR_667, labels=["other-label"])
+        assert sweep.detect_stale_hold_prs([pr], now) == []
+
+    def test_negative_control_missing_labels_field_not_detected(self):
+        now = datetime(2026, 8, 10, 12, 0, tzinfo=timezone.utc)
+        pr = {k: v for k, v in HOLD_PR_667.items() if k != "labels"}
+        assert sweep.detect_stale_hold_prs([pr], now) == []
+
+    def test_missing_number_is_skipped(self):
+        now = datetime(2026, 8, 10, 12, 0, tzinfo=timezone.utc)
+        pr = {k: v for k, v in HOLD_PR_667.items() if k != "number"}
+        assert sweep.detect_stale_hold_prs([pr], now) == []
+
+    def test_malformed_hold_since_is_skipped_safely(self):
+        now = datetime(2026, 8, 10, 12, 0, tzinfo=timezone.utc)
+        pr = dict(HOLD_PR_667, hold_since="not-a-timestamp")
+        assert sweep.detect_stale_hold_prs([pr], now) == []
+
+    def test_missing_hold_since_is_skipped_safely(self):
+        now = datetime(2026, 8, 10, 12, 0, tzinfo=timezone.utc)
+        pr = {k: v for k, v in HOLD_PR_667.items() if k != "hold_since"}
+        assert sweep.detect_stale_hold_prs([pr], now) == []
+
+    def test_summary_contains_number_title_hours_and_url(self):
+        pr = dict(HOLD_PR_667, hold_since="2026-08-01T12:00:00Z")
+        now = datetime(2026, 8, 3, 12, 0, tzinfo=timezone.utc)  # ちょうど48.0h後
+        summary = sweep.detect_stale_hold_prs([pr], now)[0]["summary"]
+        assert "#667" in summary
+        assert "DPI awareness" in summary
+        assert "48.0時間" in summary
+        assert HOLD_PR_667["url"] in summary
+
+    def test_fingerprint_is_hold_since_stable_across_sweeps(self):
+        """fingerprintはhold_since固定であり、経過時間が伸びても毎回同一
+        (urgent=Trueのため、delivered状態に関わらずdigestには出続ける——
+        merge_into_queue自体の挙動はTestMergeDedupで別途検証済み)。"""
+        now1 = datetime(2026, 8, 3, 12, 0, tzinfo=timezone.utc)
+        now2 = datetime(2026, 8, 4, 12, 0, tzinfo=timezone.utc)
+        fp1 = sweep.detect_stale_hold_prs([HOLD_PR_667], now1)[0]["fingerprint"]
+        fp2 = sweep.detect_stale_hold_prs([HOLD_PR_667], now2)[0]["fingerprint"]
+        assert fp1 == fp2 == HOLD_PR_667["hold_since"]
+
+
+class _FakeCompletedProcess:
+    def __init__(self, returncode=0, stdout="", stderr=""):
+        self.returncode = returncode
+        self.stdout = stdout
+        self.stderr = stderr
+
+
+class TestRealFetchHoldLabelTime:
+    def test_returns_latest_labeled_event_time(self, monkeypatch):
+        events = [
+            {"event": "labeled", "label": {"name": "hold:do-not-merge"},
+             "created_at": "2026-07-30T10:00:00Z"},
+            {"event": "labeled", "label": {"name": "other-label"},
+             "created_at": "2026-07-31T00:00:00Z"},  # 別ラベル: 対象外
+            {"event": "labeled", "label": {"name": "hold:do-not-merge"},
+             "created_at": "2026-08-01T10:56:09Z"},  # 再付与(付け直し): 最新を採用
+        ]
+
+        def fake_run(cmd, **kwargs):
+            assert "issues/667/events" in cmd[2]
+            return _FakeCompletedProcess(0, json.dumps(events), "")
+        monkeypatch.setattr(sweep.subprocess, "run", fake_run)
+        assert sweep._real_fetch_hold_label_time(667) == "2026-08-01T10:56:09Z"
+
+    def test_returns_none_when_no_labeled_event_found(self, monkeypatch):
+        def fake_run(cmd, **kwargs):
+            return _FakeCompletedProcess(0, json.dumps([{"event": "commented"}]), "")
+        monkeypatch.setattr(sweep.subprocess, "run", fake_run)
+        assert sweep._real_fetch_hold_label_time(667) is None
+
+    def test_returns_none_on_subprocess_failure(self, monkeypatch):
+        def fake_run(cmd, **kwargs):
+            raise OSError("gh not found")
+        monkeypatch.setattr(sweep.subprocess, "run", fake_run)
+        assert sweep._real_fetch_hold_label_time(667) is None
+
+    def test_returns_none_on_nonzero_exit(self, monkeypatch):
+        def fake_run(cmd, **kwargs):
+            return _FakeCompletedProcess(1, "", "not found")
+        monkeypatch.setattr(sweep.subprocess, "run", fake_run)
+        assert sweep._real_fetch_hold_label_time(667) is None
+
+
+class TestRealFetchHoldPrs:
+    def _make_fake_run(self, pulls_json, label_time_map):
+        def fake_run(cmd, **kwargs):
+            path = cmd[2]
+            if "pulls" in path:
+                return _FakeCompletedProcess(0, pulls_json, "")
+            import re
+            m = re.search(r"issues/(\d+)/events", path)
+            number = int(m.group(1))
+            events = label_time_map.get(number, [])
+            return _FakeCompletedProcess(0, json.dumps(events), "")
+        return fake_run
+
+    def test_filters_by_label_and_attaches_hold_since_from_labeled_event(self, monkeypatch):
+        pulls = json.dumps([
+            {"number": 667, "title": "T1", "html_url": "u1",
+             "created_at": "2026-08-01T10:52:17Z",
+             "labels": [{"name": "hold:do-not-merge"}]},
+            {"number": 700, "title": "T2(hold無し)", "html_url": "u2",
+             "created_at": "2026-08-01T00:00:00Z", "labels": [{"name": "other"}]},
+        ])
+        label_events = {667: [{"event": "labeled", "label": {"name": "hold:do-not-merge"},
+                                "created_at": "2026-08-01T10:56:09Z"}]}
+        monkeypatch.setattr(sweep.subprocess, "run", self._make_fake_run(pulls, label_events))
+
+        result = sweep._real_fetch_hold_prs()
+        assert len(result) == 1  # holdラベル無しPRは除外される
+        assert result[0]["number"] == 667
+        assert result[0]["hold_since"] == "2026-08-01T10:56:09Z"
+        assert result[0]["labels"] == ["hold:do-not-merge"]
+
+    def test_falls_back_to_created_at_when_label_event_fetch_fails(self, monkeypatch):
+        pulls = json.dumps([{"number": 667, "title": "T1", "html_url": "u1",
+                              "created_at": "2026-08-01T10:52:17Z",
+                              "labels": [{"name": "hold:do-not-merge"}]}])
+
+        def fake_run(cmd, **kwargs):
+            path = cmd[2]
+            if "pulls" in path:
+                return _FakeCompletedProcess(0, pulls, "")
+            raise OSError("events unavailable")
+        monkeypatch.setattr(sweep.subprocess, "run", fake_run)
+
+        result = sweep._real_fetch_hold_prs()
+        assert result[0]["hold_since"] == "2026-08-01T10:52:17Z"  # PR作成時刻へフォールバック
+
+    def test_raises_best_effort_fetch_error_on_subprocess_failure(self, monkeypatch):
+        def fake_run(cmd, **kwargs):
+            raise OSError("gh not found")
+        monkeypatch.setattr(sweep.subprocess, "run", fake_run)
+        with pytest.raises(sweep.BestEffortFetchError) as exc_info:
+            sweep._real_fetch_hold_prs()
+        assert exc_info.value.source == "hold_pr"
+
+    def test_raises_best_effort_fetch_error_on_nonzero_exit(self, monkeypatch):
+        def fake_run(cmd, **kwargs):
+            return _FakeCompletedProcess(1, "", "gh: not authenticated")
+        monkeypatch.setattr(sweep.subprocess, "run", fake_run)
+        with pytest.raises(sweep.BestEffortFetchError):
+            sweep._real_fetch_hold_prs()
+
+    def test_raises_best_effort_fetch_error_on_malformed_json(self, monkeypatch):
+        def fake_run(cmd, **kwargs):
+            return _FakeCompletedProcess(0, "not json", "")
+        monkeypatch.setattr(sweep.subprocess, "run", fake_run)
+        with pytest.raises(sweep.BestEffortFetchError):
+            sweep._real_fetch_hold_prs()
+
+    def test_negative_control_zero_open_prs_returns_empty_list(self, monkeypatch):
+        monkeypatch.setattr(sweep.subprocess, "run", self._make_fake_run("[]", {}))
+        assert sweep._real_fetch_hold_prs() == []
+
+
+class TestRunSweepHoldWatchIntegration:
+    """run_sweep()統合: 実キュー・実state・実gh呼び出しに一切触れない
+    (isolated_state で EVENTBUS_STATE_DIR / EVENTBUS_GH_INBOX_DB をtmp_pathへ隔離、
+    _real_fetch_hold_prs は明示的にモックする)。"""
+
+    @pytest.fixture(autouse=True)
+    def isolated_state(self, tmp_path, monkeypatch):
+        monkeypatch.setenv("EVENTBUS_STATE_DIR", str(tmp_path / "eventbus"))
+        monkeypatch.setenv("EVENTBUS_GH_INBOX_DB", str(tmp_path / "gh_inbox" / "state.db"))
+        yield tmp_path
+
+    def _patch_non_hold_fetches(self, monkeypatch):
+        monkeypatch.setattr(sweep, "_real_fetch_issues_and_comments", lambda: ([], []))
+        monkeypatch.setattr(sweep, "_real_fetch_canary_results", lambda d: [])
+        monkeypatch.setattr(sweep, "_real_fetch_master_ci_run", lambda: None)
+        monkeypatch.setattr(sweep, "_real_disk_free_gb", lambda p: 200.0)
+        monkeypatch.setattr(sweep, "_real_fetch_support_unanswered", lambda: [])
+        monkeypatch.setattr(sweep, "_real_fetch_denied", lambda: [])
+
+    def test_stale_hold_pr_queued_as_urgent(self, monkeypatch):
+        self._patch_non_hold_fetches(monkeypatch)
+        monkeypatch.setattr(sweep, "_real_fetch_hold_prs", lambda: [HOLD_PR_667])
+        monkeypatch.setattr(common, "now_iso", lambda: "2026-08-03T12:00:00Z")
+
+        summary = sweep.run_sweep()
+        assert summary["urgent"] >= 1
+        queue = common.load_queue()
+        assert "hold_pr:667" in queue
+        assert queue["hold_pr:667"].urgent is True
+        assert "#667" in queue["hold_pr:667"].summary
+
+    def test_negative_control_fresh_hold_pr_not_queued(self, monkeypatch):
+        """負の対照: 48時間未満のhold PRはキューに載らない。"""
+        self._patch_non_hold_fetches(monkeypatch)
+        fresh_pr = dict(HOLD_PR_667, hold_since="2026-08-02T23:00:00Z")
+        monkeypatch.setattr(sweep, "_real_fetch_hold_prs", lambda: [fresh_pr])
+        monkeypatch.setattr(common, "now_iso", lambda: "2026-08-03T00:00:00Z")
+
+        sweep.run_sweep()
+        queue = common.load_queue()
+        assert "hold_pr:667" not in queue
+
+    def test_negative_control_zero_hold_prs_no_entry(self, monkeypatch):
+        self._patch_non_hold_fetches(monkeypatch)
+        monkeypatch.setattr(sweep, "_real_fetch_hold_prs", lambda: [])
+
+        sweep.run_sweep()
+        queue = common.load_queue()
+        assert not any(k.startswith("hold_pr:") for k in queue)
+        assert "hold_pr_fetch_error" not in queue
+
+    def test_fetch_failure_produces_fail_loud_event(self, monkeypatch):
+        """全体取得失敗はBestEffortFetchError(source="hold_pr")経由でfail-loud
+        イベントになる(dev#659でsupport/deniedが導入した仕組みをそのまま再利用)。"""
+        self._patch_non_hold_fetches(monkeypatch)
+
+        def boom():
+            raise sweep.BestEffortFetchError("hold_pr", "exit 1: gh not authenticated")
+        monkeypatch.setattr(sweep, "_real_fetch_hold_prs", boom)
+
+        summary = sweep.run_sweep()
+        queue = common.load_queue()
+        assert "hold_pr_fetch_error" in queue
+        assert queue["hold_pr_fetch_error"].urgent is True
+        assert "hold_pr取得失敗" in queue["hold_pr_fetch_error"].summary
+        # 取得自体が失敗している間、hold_pr_stale検知は当然発生しない(道連れにしない)
+        assert not any(e.kind == "hold_pr_stale" for e in queue.values())
+
+    def test_recovery_clears_the_fail_loud_event(self, monkeypatch):
+        self._patch_non_hold_fetches(monkeypatch)
+
+        def boom():
+            raise sweep.BestEffortFetchError("hold_pr", "still down")
+        monkeypatch.setattr(sweep, "_real_fetch_hold_prs", boom)
+        sweep.run_sweep()
+        assert "hold_pr_fetch_error" in common.load_queue()
+
+        monkeypatch.setattr(sweep, "_real_fetch_hold_prs", lambda: [])
+        sweep.run_sweep()
+        assert "hold_pr_fetch_error" not in common.load_queue()

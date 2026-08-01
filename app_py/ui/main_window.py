@@ -64,6 +64,7 @@ import inquiry  # noqa: E402
 import pak_manager  # noqa: E402
 import path_health  # noqa: E402
 import pipeline_runner  # noqa: E402
+import preview_freshness  # noqa: E402
 import settings  # noqa: E402
 import update_check  # noqa: E402
 import warm_startup  # noqa: E402
@@ -231,6 +232,13 @@ class MainWindow:
         self._blender_setup_running = False
         self._blender_ready = False
         self._blender_queue: "queue.Queue[tuple]" = queue.Queue()
+        # dev#640: run_ensure_blender_setup_process()が起動する子プロセスへの
+        # 参照(C#版blenderSetupProcフィールド相当)。GUI終了時に黙ってkillする
+        # ため、_blender_setup_worker()からdo_ensure_blender_ready()へ渡す。
+        self._blender_setup_process_handle = blender_setup.BlenderSetupProcessHandle()
+        # dev#639: UpdateButtonStates()のbusy判定(running)相当。
+        # _set_running_ui_state()が更新し、_update_button_states()が参照する。
+        self._is_pipeline_running = False
 
         # 初期言語決定(DetermineInitialLang L.817-831相当。dev#532方針A
         # WP-A11/dev#549でOSロケール自動判定を結線。設定ファイルがあれば
@@ -249,6 +257,11 @@ class MainWindow:
         root.title(f"Uchinoko for Palworld {TOOL_VERSION} - {i18n.S('TitleSubtitle')}")
         root.geometry("1100x930")
         self._set_window_icon()
+        # dev#622: FormClosing(DiveToPalworld.cs L.1292-1305)相当。×ボタンでの
+        # 終了をtkinterのWM_DELETE_WINDOWで捕捉する(旧実装はメインウィンドウに
+        # 未登録で無警告のまま閉じられていた。子ダイアログ側=support_dialog.pyの
+        # 登録は元々存在し、そちらは無関係)。
+        self.root.protocol("WM_DELETE_WINDOW", self._on_form_closing)
 
         # 問い合わせダイアログ(#21)の可変状態(SupportDialogState相当)。
         # アプリ実行中はダイアログを閉じても引き継がれる必要があるため、
@@ -260,6 +273,18 @@ class MainWindow:
         self._drop_target: dnd.DropTarget | None = None
         self._setup_drag_and_drop()
 
+        # dev#617/#639: UpdateButtonStates()相当を起動直後に1回反映しておく
+        # (_build_widgets()はconvertButton等をstate指定なし=既定"normal"で
+        # 生成するため、呼ばないとVRM未選択・Blender未準備のままボタンが
+        # 押せてしまう。C#版は起動時のUpdateButtonStates()呼び出し経路で
+        # hasVrm=false/blenderReady=falseのため最初からEnabled=falseになって
+        # いる)。_set_running_ui_state(False)経由で、convertButton
+        # (_refresh_convert_button_freshness、hasVrm/fresh/workRootFailed/
+        # blenderReady判定)とmatsButton/previewButton(_update_button_states、
+        # busy/blenderReady/hasVrm/workRootFailed判定)の両方が一度に初期化
+        # される(#637マージ後の統合、PR #647本文の指示どおり)。
+        self._set_running_ui_state(False)
+
         # RefreshPakList()相当(DiveToPalworld.cs L.899, L.1260)。起動直後に
         # 一覧+適用中判定を populate する(§1.2 #26/#18、WP-A4の結線対象)。
         self._on_refresh_pak_list()
@@ -268,6 +293,15 @@ class MainWindow:
         # VRMを復帰(設定・プレビューも一緒に戻る)」部分(dev#623)。RefreshPakList
         # の直後という順序もC#版どおり。
         self._restore_last_vrm_on_startup()
+
+        # dev#621: workRootFailed(主系・フォールバック先とも書き込み不可)の
+        # 検知・ログ・エラーダイアログ・ボタン無効化。ログ欄(self.log_box)と
+        # 変換系ボタンが両方とも_build_widgets()完了後でないと存在しないため
+        # ここで呼ぶ(CheckPathHealthOnStartupがShownイベント=ウィジェット
+        # 生成済みの時点で呼ばれるのと同じ順序関係。C#版もRestoreLastVrm→
+        # UpdateButtonStates→...→CheckPathHealthOnStartupの順でShown内に
+        # 並んでおり、VRM復帰が先という順序を保つ)。
+        self._check_work_root_failed_on_startup()
 
         # dev#532 D1: 起動時セルフチェック(path_health.py、§1.2 #31相当+
         # 「環境隔離4層」の④)。同期・軽量(ディスクI/O無しのパス比較のみ)
@@ -325,27 +359,98 @@ class MainWindow:
             pass
 
     def _resolve_work_root(self) -> str:
-        """WorkRootResolveLogic.Resolve(DiveToPalworld.cs L.6446-)相当の最小版。
+        """WorkRootResolveLogic.Resolve(DiveToPalworld.cs L.6446-6477)相当。
         appRoot\\work への書き込みを試し、失敗すれば%LOCALAPPDATA%\\Uchinoko\\work
         へフォールバックする(DESIGN.md §2.8「外部依存パスの原則」の三点セット
-        のうち①②のみ。探索過程の詳細ログ・パス健全性診断はpath_health.py
-        (WP-A6、DESIGN.md §4.1)の担当のため、本WPでは足りる分だけの簡略版
-        〈合理的解釈〉)。"""
+        のうち①②)。
+
+        dev#621: 両方とも書き込めない(稀)場合を明示的に検知できるよう、
+        C#版のworkRootFailed/workRootUsedFallback/workRootPrimaryPath/
+        workRootFallbackPath/workRootPrimaryError/workRootFallbackError
+        フィールド(L.691-696)相当をインスタンス属性として残す(呼び出し元は
+        _check_work_root_failed_on_startup()。③探索した場所と判定を全部ログへ、
+        の材料もここに揃う)。両方失敗した場合もC#と同じくフォールバック先の
+        パス文字列をwork_rootとして返す(下流コードが例外で落ちないようにする
+        ためだけの値で、実際には書き込めない。押しても失敗するだけの状態は
+        変換系ボタンの無効化で防ぐ)。"""
         primary = os.path.join(self.app_root, "work")
-        try:
-            os.makedirs(primary, exist_ok=True)
-            probe = os.path.join(primary, ".d2p_write_probe")
-            with open(probe, "w", encoding="utf-8") as f:
-                f.write("")
-            os.remove(probe)
-            return primary
-        except OSError:
-            pass
         fallback = os.path.join(
             os.environ.get("LOCALAPPDATA", os.path.expanduser("~")), "Uchinoko", "work"
         )
-        os.makedirs(fallback, exist_ok=True)
+        self._work_root_primary_path = primary
+        self._work_root_fallback_path = fallback
+        self._work_root_used_fallback = False
+        self._work_root_failed = False
+
+        def probe(path: str) -> str | None:
+            """書き込み可能ならNone、不可なら理由文字列を返す
+            (ProbeWorkRootWritable相当)。"""
+            try:
+                os.makedirs(path, exist_ok=True)
+                probe_file = os.path.join(path, ".d2p_write_probe")
+                with open(probe_file, "w", encoding="utf-8") as f:
+                    f.write("")
+                os.remove(probe_file)
+                return None
+            except OSError as ex:
+                return str(ex)
+
+        self._work_root_primary_error = probe(primary)
+        if self._work_root_primary_error is None:
+            return primary
+
+        self._work_root_fallback_error = probe(fallback)
+        if self._work_root_fallback_error is None:
+            self._work_root_used_fallback = True
+            return fallback
+
+        self._work_root_failed = True
         return fallback
+
+    def _work_root_resolution_line(self) -> str:
+        """WorkRootResolutionLine() (DiveToPalworld.cs L.3255-3266) 相当。
+        フォールバックが起きた/起きなかったに関わらず必ず1行を返す
+        (「成功時にも構造が残らないと診断できない」CLAUDE.md方針)。"""
+        if not self._work_root_used_fallback and not self._work_root_failed:
+            return f"work_root: {self.work_root} (install location, writable)"
+        if self._work_root_used_fallback:
+            return (
+                f"work_root: {self.work_root} (fallback to a user-writable location; "
+                f'install location "{self._work_root_primary_path}" is not writable: '
+                f"{self._work_root_primary_error})"
+            )
+        return (
+            f'work_root: {self.work_root} [!] neither the install location ("'
+            f'{self._work_root_primary_path}": {self._work_root_primary_error}) nor '
+            f'the fallback ("{self._work_root_fallback_path}": '
+            f"{self._work_root_fallback_error}) is writable"
+        )
+
+    def _check_work_root_failed_on_startup(self) -> None:
+        """CheckPathHealthOnStartup()のworkRootFailed部分(DiveToPalworld.cs
+        L.3277-3287)相当。汎用パス健全性警告(too-long/UNC/OneDrive、
+        表#11・別issue・死んだコードのまま=本WPのスコープ外)とは別枠。
+
+        主系・フォールバック先とも書き込み不可の場合のみ、①ログ記録
+        ②エラーダイアログ ③変換系ボタン(convert/mats/preview)の全面無効化
+        を行う(UpdateButtonStates L.2486-2491の`!workRootFailed`条件相当。
+        py版は継続的なUpdateButtonStatesループを持たないため、ここで一度
+        disabledにし、_set_running_ui_state()側でも再度normalへ戻さない
+        ガードを入れてある)。"""
+        self._log(self._work_root_resolution_line())
+        if not self._work_root_failed:
+            return
+        self._log("[!] " + i18n.S("TitleWorkRootUnwritable"))
+        for key in ("convertButton", "matsButton", "previewButton"):
+            self.widgets[key].config(state="disabled")
+        messagebox.showerror(
+            i18n.S("TitleWorkRootUnwritable"),
+            i18n.F(
+                "MsgWorkRootUnwritableFormat",
+                self._work_root_primary_path,
+                self._work_root_fallback_path,
+            ),
+        )
 
     def _current_os_culture_name(self) -> str | None:
         """CultureInfo.CurrentUICulture.Name相当(L.830で渡される実際の値)。
@@ -748,17 +853,23 @@ class MainWindow:
         )
         support_dialog.show_support_dialog(self.root, self._support_state, ctx)
 
-    def _log(self, text: str) -> None:
+    def _log(self, text: str, *, gui: bool = True) -> None:
         """ログ欄への追記(旧AppendLog相当のごく簡略版)。dev#592層3(生存防御):
         ログ欄への描画・コンソール/リダイレクト先への出力のいずれも、
-        GUI本体(ポーリング・進捗・完了処理)を巻き込んで死んではならない。"""
-        try:
-            self.log_box.configure(state="normal")
-            self.log_box.insert("end", text + "\n")
-            self.log_box.see("end")
-            self.log_box.configure(state="disabled")
-        except tk.TclError:
-            pass
+        GUI本体(ポーリング・進捗・完了処理)を巻き込んで死んではならない。
+
+        dev#596b: gui=False の行はログ欄(log_box)には表示しない。ユーザーの
+        判断に不要な開発向け詳細行を画面から抑制しつつ、print()経由でコンソール/
+        launch.log(res\\logs\\launch.log、app_py\\main.pyがsys.stdoutをリダイレクト
+        済み)には引き続き残す。診断可能性は落とさない。"""
+        if gui:
+            try:
+                self.log_box.configure(state="normal")
+                self.log_box.insert("end", text + "\n")
+                self.log_box.see("end")
+                self.log_box.configure(state="disabled")
+            except tk.TclError:
+                pass
         try:
             print(text)
         except Exception:  # noqa: BLE001 -- dev#592: cp932等でUnicodeEncodeError
@@ -766,10 +877,15 @@ class MainWindow:
 
     def _stub(self, action_name: str):
         """イベントハンドラの仮実装。押されたら「未実装」とログへ出すだけで、
-        実処理は一切行わない(WP-A2以降が結線する、DESIGN.md §5.2)。"""
+        実処理は一切行わない(WP-A2以降が結線する、DESIGN.md §5.2)。
+
+        dev#596b: 現存する唯一の呼び出し元(pakList選択変更)はユーザー操作の
+        たびに毎回発火する高頻度ノイズで、「not implemented」という文言自体が
+        ユーザーの判断に資さない(むしろ何か壊れているように誤解されうる)ため、
+        GUIログ欄への表示は抑制する(gui=False、console/launch.logには残す)。"""
 
         def handler(*_args, **_kwargs):
-            self._log(f"[stub] {action_name}: 未実装")
+            self._log(f"[stub] {action_name}: not implemented", gui=False)
 
         return handler
 
@@ -921,6 +1037,10 @@ class MainWindow:
         drop_bones_box = tk.Entry(kodawari_panel)
         drop_bones_box.place(x=150, y=44, width=400, height=23)
         self._register_tip(drop_bones_box, "TipDropBones")
+        # dev#617: dropBonesBox.TextChanged (L.1256) 相当。除外ボーン欄は
+        # BuildPreviewSig()の構成要素なので、書き換えのたびFull Convertボタンの
+        # 鮮度判定を即再計算する(_on_drop_bones_changed参照)。
+        drop_bones_box.bind("<KeyRelease>", self._on_drop_bones_changed, add="+")
         self.widgets["dropBonesBox"] = drop_bones_box  # #13
 
         drop_bones_hint = tk.Label(kodawari_panel, text=i18n.S("HintDropBonesEmpty"))
@@ -940,16 +1060,23 @@ class MainWindow:
         # Top値はLayoutContentArea()が開閉状態に応じて動的計算する
         # (layout_content_area()参照、#25)。ここでは初期値のみ置く。
         preview_front = tk.Label(
-            root, text="(preview front)", relief="solid", borderwidth=1, bg="#f0f0f0",
+            root, text=i18n.S("LabelPreviewPlaceholderFront"),
+            relief="solid", borderwidth=1, bg="#f0f0f0",
         )
         preview_front.place(x=12, y=210, width=380, height=360)
         self.widgets["previewFront"] = preview_front  # #15 (front)
+        # LabelPreviewPlaceholderFront/Sideはimageが設定されると
+        # Label既定のcompound=none挙動でtextが隠れる(表示上は無害)ため、
+        # 通常の静的キーとして_register_textでも問題ない(dev#630)
+        self._register_text(preview_front, "LabelPreviewPlaceholderFront")
 
         preview_side = tk.Label(
-            root, text="(preview side)", relief="solid", borderwidth=1, bg="#f0f0f0",
+            root, text=i18n.S("LabelPreviewPlaceholderSide"),
+            relief="solid", borderwidth=1, bg="#f0f0f0",
         )
         preview_side.place(x=400, y=210, width=380, height=360)
         self.widgets["previewSide"] = preview_side  # #15 (side)
+        self._register_text(preview_side, "LabelPreviewPlaceholderSide")
         # 実画像表示(work\<名>\converted\preview_male_stand[_side].png)は
         # dev#599で実装済み(_apply_previews/_set_preview_widget参照)。
         # Pillow等の追加依存は使わずtk.PhotoImage(Tk 8.6ネイティブPNGデコード)
@@ -1083,15 +1210,26 @@ class MainWindow:
             state="readonly",
         )
         lang_combo.place(x=914, y=90, width=156, height=24)
-        # dev#595: ぱん実機報告「初回起動時、Languageコンボの表示が空」への対応。
-        # state="readonly"のttk.Comboboxはtextvariableをコンストラクタで渡すだけ
-        # では、Tk側の内部選択インデックス(current())が追随せず初期表示が
-        # 空欄になりうる(readonly Comboboxの既知の挙動)。.current()で内部選択
-        # インデックスを明示的に確定させ、表示を強制する(現在言語の決定ロジック
-        # 自体=DetermineInitialLang相当は既存のまま変えていない。「決めた値を
-        # 実際にウィジェットへ反映する」配線漏れのみを直す〈GUI起動が禁じられて
-        # いるため実機目視はできていない。ttk.Comboboxのreadonly初期表示問題は
-        # 一般に知られた挙動であり、.current()呼び出しはその標準的な対処〉)。
+        # dev#595 再修正(2026-08-01): PR #608の「readonly Comboboxはcurrent()を
+        # 呼ばないと初期表示が空になる」という見立ては、非表示Tkルートでの実証
+        # (app_py\tests\test_main_window_lang_combo.pyのrepro系テスト)で否定
+        # された——current()を呼ばず、textvariableだけ渡しても、その変数を
+        # 生かし続けさえすれば普通に表示される。
+        #
+        # 実際の原因はPythonの参照カウントGCだった: lang_varはこの関数のローカル
+        # 変数で、self.widgets/self.*のどこにも保持されていなかった。ttkウィジェット
+        # 側はtextvariableを「Tcl変数名の文字列」として持つだけでPythonオブジェクト
+        # への参照は握らないため、_build_widgets()がreturnした時点でlang_varの
+        # 参照カウントが0になりCPythonが即座に破棄する。tkinter.Variable.__del__は
+        # 破棄時に対応するTcl変数をglobalunsetvarで消してしまうため、ウィジェットは
+        # 存在しない変数を指すことになり表示が空欄になる(combo.get()==""、
+        # combo.current()==-1で再現・確認済み)。すぐ下のauto_apply_var
+        # (L.741,751: self._auto_apply_var = auto_apply_var)は同じ関数内で
+        # 正しく生存参照を保持しており、lang_varだけがその慣例から漏れていた。
+        #
+        # 修正: lang_varをself._lang_varとして保持し、GCされないようにする
+        # (.current()呼び出し自体は無害なので実害ないが根治ではないため残す)。
+        self._lang_var = lang_var
         lang_combo.current(i18n.LANGS.index(i18n.current_lang))
         lang_combo.bind("<<ComboboxSelected>>", self._on_language_selected)
         self._register_tip(lang_combo, "TipLanguageSwitch")
@@ -1136,7 +1274,6 @@ class MainWindow:
         self.widgets["vrmBox"].insert(0, path)
         self._license_confirmed = False
         settings.save_last_vrm(self.app_root, path)
-        self.widgets["statusLabel"].config(text=i18n.S("StatusReadyToConvert"))
         self._log(path)
         name = pipeline_runner.sanitize_name(os.path.splitext(os.path.basename(path))[0])
         job_dir = os.path.join(self.work_root, name)
@@ -1145,6 +1282,12 @@ class MainWindow:
         # (browse/D&D/prefabのUnity輸出完了)がこの_set_vrm_pathへ集約している
         # ため、末尾でここを呼ぶだけで3経路すべてに自動プレビューが結線される。
         self._maybe_auto_preview(path)
+        # dev#613/#617: ApplyAvatarLoad() L.1598 `UpdateButtonStates();`相当
+        # (RunPipeline()を試みた直後に必ず1回呼ばれる)。旧実装はここで
+        # StatusReadyToConvertを無条件表示していたが、C#版はUpdateButtonStates()
+        # のhasVrm/fresh判定に委ねている(自動プレビューが未生成/未実行のまま
+        # 終わればStatusPreviewStaleが正しい)ため、鮮度判定込みの結線に置き換える。
+        self._refresh_convert_button_freshness()
 
     def _apply_restored_settings(self, job_dir: str, *, set_vrm_path: bool) -> bool:
         """ApplyRestoredSettings()(DiveToPalworld.cs L.1633-1663)相当
@@ -1217,18 +1360,105 @@ class MainWindow:
         """ApplyAvatarLoad() L.1591-1597の起動条件部分に相当:
         `if (File.Exists(r.Path) && !IsPreviewFresh() && runningProc == null
         && blenderReady) RunPipeline(true, false, true);`
-        py版にはプレビュー鮮度判定(IsPreviewFresh/BuildPreviewSig、
-        DiveToPalworld.cs L.2416-2425)がまだ移植されていない(dev#611時点で
-        grep実測、該当関数・シグネチャ無し)ため、その項は対象外とし、
-        「登録のたびに毎回自動生成」に留める〈曖昧点、完了報告に明記〉。
-        残り3条件(ファイル存在/二重起動防止/Blender準備済み)はそのまま移植する。"""
+        dev#613: py版にはプレビュー鮮度判定(IsPreviewFresh/BuildPreviewSig、
+        DiveToPalworld.cs L.2416-2425)が未移植のままだったため(dev#611時点の
+        既知のギャップ)、preview_freshness.py(本WPで新設)を使って移植する。
+        4条件すべて(ファイル存在/鮮度/二重起動防止/Blender準備済み)を
+        C#と同じ順序で揃えた。"""
         if not os.path.isfile(path):
             return
-        if not self._blender_ready:
+        if self._is_preview_fresh(path):
             return
         if self._active_handle is not None and self._active_handle.is_running():
             return
+        if not self._blender_ready:
+            return
         self._start_pipeline(preview_only=True, materials_only=False, auto=True)
+
+    def _is_preview_fresh(self, vrm_path: str) -> bool:
+        """IsPreviewFresh() L.2416-2425相当。呼び出し時点のdropBonesBox等の
+        現在値を使うライブ判定(C#もコントロールの現在値を毎回読む。開始時点の
+        スナップショットではない)。"""
+        return preview_freshness.is_preview_fresh(
+            self.work_root,
+            vrm_path,
+            self._shoulder_offset_deg,
+            self._merge_fingers,
+            self.widgets["dropBonesBox"].get(),
+        )
+
+    def _save_preview_sig(self, vrm_path: str) -> None:
+        """SavePreviewSig() L.2427-2430相当。"""
+        preview_freshness.save_preview_sig(
+            self.work_root,
+            vrm_path,
+            self._shoulder_offset_deg,
+            self._merge_fingers,
+            self.widgets["dropBonesBox"].get(),
+        )
+
+    def _finalize_fresh_preview(self, vrm_path: str) -> None:
+        """OnPipelineDone() L.2914-2915相当(`SavePreviewSig(); UpdateButtonStates();
+        // フル変換ボタンがここで解禁される`)をまとめた結線ヘルパー。
+        _on_pipeline_exit()のpreview_only成功時にだけ呼ぶ。呼び出し順序自体が
+        C#と1:1対応する契約なので、テストでもこの順序を検査する。"""
+        self._save_preview_sig(vrm_path)
+        self._refresh_convert_button_freshness()
+
+    def _refresh_convert_button_freshness(self) -> None:
+        """UpdateButtonStates() (DiveToPalworld.cs L.2468-2525) のうち、
+        Full Convertボタンの鮮度ゲート(L.2479-2480 hasVrm/fresh判定、L.2486
+        convertButton.Enabled)とStatusPreviewStale/StatusReadyToConvertの
+        テキスト分岐(L.2520-2523)を移植する(dev#617)。
+
+        C#: `convertButton.Enabled = !busy && hasVrm && fresh && blenderReady
+        && !workRootFailed;` のうち、matsButton/previewButtonと共有できない
+        fresh判定が絡む部分だけをここへ切り出す(busy/blenderReady/
+        workRootFailedの3条件は_update_button_states()と重複するが、
+        convertButtonはfreshとの組み合わせでしか意味を持たないため独立させて
+        いる。matsButton/previewButtonのゲートは_update_button_states()参照)。
+
+        dev#621: workRootFailed(L.2486の`!workRootFailed`)は
+        _set_running_ui_state()の3ボタン一括ガードとは別に、ここでも
+        明示的に見る。このメソッドは_set_running_ui_state()を経由しない
+        経路(_on_drop_bones_changed/_finalize_fresh_preview/__init__直後
+        等)からも直接呼ばれるため、work_root_failed中に再度normalへ
+        戻ってしまう漏れを構造的に防ぐ。
+
+        dev#639: blenderReady(L.2486の`&& blenderReady`)も同じ理由で
+        ここに明示的なガードを持つ(_update_button_states()を経由しない
+        呼び出し経路があるため)。blenderReady未確定時のstatusLabel文言は
+        _on_blender_setup_done()側が別途面倒を見るため、ここでは
+        work_root_failedと同様にstatusLabelへ触れず早期returnするだけに
+        留める。
+
+        実行中(pipeline稼働中)はstatusLabelのテキストを変更しない
+        (C#のUpdateButtonStates()も`if (!running)`の内側でのみテキストを
+        書き換える、L.2504相当。実行中に呼ばれても「StatusPreviewGenerating」
+        等の実行中メッセージを上書きしないための保護)。"""
+        if self._work_root_failed:
+            self.widgets["convertButton"].config(state="disabled")
+            return
+        if not self._blender_ready:
+            self.widgets["convertButton"].config(state="disabled")
+            return
+        vrm_path = self.widgets["vrmBox"].get().strip()
+        has_vrm = os.path.isfile(vrm_path)
+        fresh = has_vrm and self._is_preview_fresh(vrm_path)
+        self.widgets["convertButton"].config(state=("normal" if fresh else "disabled"))
+        running = self._active_handle is not None and self._active_handle.is_running()
+        if running or not has_vrm:
+            return
+        self.widgets["statusLabel"].config(
+            text=i18n.S("StatusReadyToConvert") if fresh else i18n.S("StatusPreviewStale")
+        )
+
+    def _on_drop_bones_changed(self, _event=None) -> None:
+        """dropBonesBox.TextChanged (DiveToPalworld.cs L.1256:
+        `dropBonesBox.TextChanged += delegate { UpdateButtonStates(); };`) 相当。
+        除外ボーン欄はBuildPreviewSig()の構成要素の1つなので、入力のたび
+        Full Convertボタンの鮮度表示を即座に再計算する。"""
+        self._refresh_convert_button_freshness()
 
     # -- D&D(WP-A8、DESIGN.md §1.1-#4/§6-2、ui\dnd.pyとの結線) -----------------
 
@@ -1244,7 +1474,7 @@ class MainWindow:
             )
         except Exception as ex:  # noqa: BLE001 -- D&D不可でも起動は継続する
             self._drop_target = None
-            self._log(f"[dnd] 初期化に失敗、D&Dは無効: {ex}")
+            self._log(f"[dnd] failed to initialize, drag & drop disabled: {ex}")
 
     def _on_dropped_path(self, path: str) -> None:
         """OnDragDrop() L.1406-1421相当(拒否判定・Blenderゲート機構を除いた
@@ -1320,7 +1550,7 @@ class MainWindow:
         from tkinter import messagebox
 
         cause, action = self._classify_apply_failure(ex)
-        self._log(f"[エラー] {action_label}に失敗: {target_path} / [{type(ex).__name__}] {ex}")
+        self._log(f"[Error] {action_label} failed: {target_path} / [{type(ex).__name__}] {ex}")
         messagebox.showerror(
             i18n.F("MsgApplyFailureTitleFormat", action_label),
             i18n.F("MsgApplyFailureBodyFormat", action_label, cause, action, target_path),
@@ -1419,7 +1649,7 @@ class MainWindow:
                     if gen != self._applied_status_gen:
                         return
                     applied_label.config(text=i18n.S("AppliedStatusCheckFailed"))
-                    self._log(f"[エラー] 適用中MOD確認に失敗: {ex}")
+                    self._log(f"[Error] failed to check applied MOD: {ex}")
 
                 self.root.after(0, on_fail)
                 return
@@ -1583,8 +1813,12 @@ class MainWindow:
             # = null相当)。
             self._preview_images.pop("previewFront", None)
             self._preview_images.pop("previewSide", None)
-            self.widgets["previewFront"].config(image="", text="(preview front)")
-            self.widgets["previewSide"].config(image="", text="(preview side)")
+            self.widgets["previewFront"].config(
+                image="", text=i18n.S("LabelPreviewPlaceholderFront")
+            )
+            self.widgets["previewSide"].config(
+                image="", text=i18n.S("LabelPreviewPlaceholderSide")
+            )
 
         self._on_refresh_pak_list()
         self.widgets["statusLabel"].config(text=i18n.F("StatusDeletedFormat", avatar_name))
@@ -1710,6 +1944,35 @@ class MainWindow:
         if messagebox.askyesno(i18n.S("TitleConfirm"), i18n.S("ConfirmCancelConvertBody")):
             self._active_handle.kill()
 
+    def _on_form_closing(self) -> None:
+        """FormClosing(DiveToPalworld.cs L.1292-1305)相当。dev#622:
+        WM_DELETE_WINDOW(×ボタン/Alt+F4等)ハンドラとして__init__で登録される。
+
+        dev#640統合(PR #647): C#と同じ順序で、まず
+        KillBlenderSetupProcess()(L.1298、Blenderのバックグラウンド初回
+        取得プロセスを孤児化させないためのサイレントkill)を**確認無し・
+        無条件**で呼ぶ(L.1294-1297のコメントどおり、ユーザーが明示的に
+        始めた作業ではない裏方処理のため確認しない。runningProcの有無に
+        かかわらず先頭で必ず実行、C#のFormClosingデリゲート本体と同じ順序)。
+        `blender_setup.BlenderSetupProcessHandle.kill()`は実行中でなければ
+        no-op(dev#640、blender_setup.py参照)。
+
+        続いて変換(またはUnity輸出)がpipeline_runner経由で実行中の場合のみ、
+        C#と同じ確認ダイアログ(ConfirmExitWhileRunningBody/TitleConfirm、
+        YesNo)を出す(dev#622)。Noならウィンドウを閉じない(`e.Cancel = true`
+        相当、ここでは単に何もせず戻ることで同じ効果になる)。Yesなら
+        KillConversion()相当(handle.kill()、taskkill /T /Fでプロセス
+        ツリーごと終了、pipeline_runner.ProcessHandle.kill()参照)を呼んでから
+        ウィンドウを破棄する。"""
+        self._blender_setup_process_handle.kill()
+        if self._active_handle is not None and self._active_handle.is_running():
+            if not messagebox.askyesno(
+                i18n.S("TitleConfirm"), i18n.S("ConfirmExitWhileRunningBody")
+            ):
+                return
+            self._active_handle.kill()
+        self.root.destroy()
+
     def _poll_active_handle(self) -> None:
         """dev#592層3(生存防御): handle.poll()がここで例外を出すと、以後
         self.root.after()による再スケジュールが行われずポーリングが恒久
@@ -1735,6 +1998,9 @@ class MainWindow:
         marker = pipeline_runner.parse_progress_marker(clean)
         if marker is not None:
             pct, raw_label = marker
+            # dev#602: マーカー到着=実進捗が分かっている状態なので、indeterminate
+            # (Unity輸出のMarquee相当)が残っていればここでdeterminateへ戻す。
+            self._set_busy_bar_mode(pipeline_runner.busy_bar_mode_on_marker())
             self.widgets["busyBar"]["value"] = pct
             label = pipeline_runner.translate_progress_label_dynamic(raw_label)
             self.widgets["statusLabel"].config(text=f"{label}... ({pct}%)")
@@ -1835,6 +2101,13 @@ class MainWindow:
                 i18n.F("MsgConvertDoneWithWarningsFormat", "\n\n".join(self._pipeline_warnings)),
             )
         if preview_only:
+            # dev#613/#617: OnPipelineDone() L.2914-2915相当
+            # (`SavePreviewSig(); UpdateButtonStates(); // フル変換ボタンが
+            # ここで解禁される`)。StatusPreviewDoneの明示表示より先に行う
+            # (C#と同じ順序。_finalize_fresh_preview内のUpdateButtonStates
+            # 相当が一時的にStatusReadyToConvert等を書いても、直後にここで
+            # StatusPreviewDoneへ上書きされるのはC#と同じ挙動)。
+            self._finalize_fresh_preview(self.widgets["vrmBox"].get().strip())
             self.widgets["statusLabel"].config(text=i18n.S("StatusPreviewDone"))
             # dev#600×dev#611: OnPipelineDone() L.2916-2917相当の完了ダイアログ。
             # silentPreview(dev#611、アバター登録時の自動プレビュー)がTrueの間は
@@ -1853,30 +2126,106 @@ class MainWindow:
             avatar_name = os.path.basename(handle.job_dir)
             pak_path = self._resolve_completed_pak_path(handle.job_dir)
             if pak_path is None:
-                self._log(f"[auto-apply] 完成pakが見つからないため自動適用をスキップ: {avatar_name}")
+                self._log(f"[auto-apply] skipped, no completed pak found: {avatar_name}")
             else:
                 try:
                     auto_applied = self._apply_pak_path(pak_path, avatar_name)
                 except Exception as ex:  # noqa: BLE001 -- 仕様2: 例外は握ってGUIを殺さない
                     auto_applied = False
-                    self._log(f"[auto-apply] 予期しない例外: {ex}")
-                self._log(f"[auto-apply] {'成功' if auto_applied else '失敗/中断'}: {avatar_name}")
+                    self._log(f"[auto-apply] unexpected exception: {ex}")
+                self._log(f"[auto-apply] {'succeeded' if auto_applied else 'failed/aborted'}: {avatar_name}")
         # dev#600: OnPipelineDone() L.2950-2952相当の完了ダイアログ結線。
         # 自動適用済み(autoApplied)なら二重の完了通知を避けるため抑制する。
         if not auto_applied:
             messagebox.showinfo(i18n.S("TitleConvertDone"), i18n.S("MsgConvertDoneBody"))
 
-    def _set_running_ui_state(self, running: bool) -> None:
-        """UpdateButtonStates()の変換中/非変換中の切替部分に相当する最小版。"""
-        state = "disabled" if running else "normal"
-        for key in ("convertButton", "matsButton", "previewButton"):
-            self.widgets[key].config(state=state)
+    def _set_running_ui_state(
+        self, running: bool, *, phase: str = pipeline_runner.PHASE_PIPELINE
+    ) -> None:
+        """UpdateButtonStates()の変換中/非変換中の切替部分に相当する最小版。
+
+        dev#602: phaseは開始時のbusyBarモード決定にのみ使う
+        (pipeline_runner.initial_busy_bar_mode()参照)。フル変換
+        (phase=PHASE_PIPELINE、既定値)は常にdeterminateから開始する
+        ——これにより、直前にUnity輸出(indeterminate)を経由していた場合でも
+        残留せず必ずリセットされる(RunPipeline() L.2602/RunUnityExport()
+        L.2678の両方が呼び出しのたびにStyleを明示設定するのと同じ)。
+        running=False(終了時)もC#版のOnUnityExportDone() L.2686と同じく
+        無条件でdeterminateへ戻す。
+
+        dev#613/#617: idleに戻る際、convertButtonの有効化にプレビュー鮮度判定
+        (_refresh_convert_button_freshness、IsPreviewFresh相当)を組み込む
+        (running中は busy 側で問答無用でdisabled、C#の
+        `!busy && hasVrm && fresh && ...` のうち`!busy`部分に相当)。
+
+        dev#621: workRootFailed中は running=False で戻ってきても
+        matsButton/previewButtonを再度normalへ戻さない(UpdateButtonStates
+        L.2486-2491の`!workRootFailed`条件相当。恒久的な全面無効化)。
+        convertButtonは_refresh_convert_button_freshness()側でも同じ
+        work_root_failedガードを持つ(このメソッド以外の経路
+        ——_on_drop_bones_changed等——からも呼ばれるため、ここだけの
+        ガードでは漏れる)。
+
+        dev#639: matsButton/previewButtonの有効/無効自体は
+        _update_button_states()(busy/blenderReady/hasVrm/workRootFailed
+        ゲート込み、PR #647統合)へ委譲する。
+        """
+        self._is_pipeline_running = running
+        self._update_button_states()
         self.widgets["cancelButton"].config(state=("normal" if running else "disabled"))
         if running:
+            self.widgets["convertButton"].config(state="disabled")
             self.widgets["busyBar"]["value"] = 0
             self.widgets["busyBar"].place(**self._busy_bar_geometry)
+            self._set_busy_bar_mode(pipeline_runner.initial_busy_bar_mode(phase))
         else:
+            self._set_busy_bar_mode(pipeline_runner.BUSY_BAR_MODE_DETERMINATE)
+            self._refresh_convert_button_freshness()
             self.widgets["busyBar"].place_forget()
+
+    def _set_busy_bar_mode(self, mode: str) -> None:
+        """busyBarのStyle切替(RunPipeline() L.2602 Continuous / RunUnityExport()
+        L.2678-2679 Marquee+MarqueeAnimationSpeed=30相当)。indeterminateでは
+        ttk Progressbar.start()でアニメーションを開始し(intervalはC#の
+        MarqueeAnimationSpeed=30msをそのまま踏襲)、determinateではstop()して
+        値表示に戻す。"""
+        busy_bar = self.widgets["busyBar"]
+        if mode == pipeline_runner.BUSY_BAR_MODE_INDETERMINATE:
+            busy_bar.config(mode="indeterminate")
+            busy_bar.start(30)
+        else:
+            busy_bar.stop()
+            busy_bar.config(mode="determinate")
+
+    def _update_button_states(self) -> None:
+        """UpdateButtonStates()(app\\DiveToPalworld.cs L.2468-2525)のうち、
+        matsButton/previewButtonのゲート判定を移植(dev#639)。convertButtonは
+        _refresh_convert_button_freshness()側が担当する(鮮度判定
+        (dev#613/#617)とblenderReadyが絡むため分離、そちらもdev#639統合で
+        blenderReadyゲートを追加済み)。
+
+        C#: previewButton.Enabled = !busy && hasVrm && blenderReady && !workRootFailed;
+            matsButton.Enabled    = !busy && hasVrm && blenderReady && !workRootFailed
+                                     && HasNoueFullBuild();
+
+        本WP作成時点(#647分岐元)ではhasVrm/workRootFailedの判定コードが
+        まだmasterに無かったため`busy`/`blenderReady`の2条件のみで独立追加
+        されていたが、#635(dev#613/#617)・#637(dev#621)のマージにより
+        `_work_root_failed`判定・vrmBoxウィジェットが揃ったため、本統合
+        (Masterライター、PR #647本文の指示どおり)でhasVrm/workRootFailedを
+        合流させた。HasNoueFullBuild()はpy版未実装のため引き続き対象外
+        (既知のギャップ、matsButton/previewButtonを同一ゲートで扱う)。"""
+        vrm_path = self.widgets["vrmBox"].get().strip()
+        has_vrm = os.path.isfile(vrm_path)
+        enabled = (
+            not self._is_pipeline_running
+            and self._blender_ready
+            and has_vrm
+            and not self._work_root_failed
+        )
+        state = "normal" if enabled else "disabled"
+        for key in ("matsButton", "previewButton"):
+            self.widgets[key].config(state=state)
 
     def _clear_log(self) -> None:
         log_box = self.log_box
@@ -1898,7 +2247,9 @@ class MainWindow:
             )
             return
         self._clear_log()
-        self._set_running_ui_state(True)
+        # dev#602: Unity輸出は構造的に##PROGRESS##マーカーが来ない工程
+        # (RunUnityExport() L.2677コメント)なのでindeterminate(Marquee相当)。
+        self._set_running_ui_state(True, phase=pipeline_runner.PHASE_UNITY_EXPORT)
         self.widgets["statusLabel"].config(text=i18n.S("StatusUnityExporting"))
         self._active_handle = pipeline_runner.run_unity_export(
             self.app_root, self.work_root, prefab_path,
@@ -1949,7 +2300,9 @@ class MainWindow:
             self._blender_queue.put(("progress", pct, phase))
 
         ok, fail_message, action = blender_setup.do_ensure_blender_ready(
-            self.app_root, on_progress=on_progress
+            self.app_root,
+            on_progress=on_progress,
+            process_handle=self._blender_setup_process_handle,
         )
         self._blender_queue.put(("done", ok, fail_message, action))
 
@@ -1981,6 +2334,12 @@ class MainWindow:
         self._blender_setup_running = False
         self._blender_ready = ok
         self.widgets["busyBar"].place_forget()
+        # dev#639: blenderReady確定(成功/失敗いずれも)の直後にゲートを
+        # 再計算する。失敗時は依然disabledのまま(初期状態からの変化なし)だが、
+        # 「blenderReady変化のたびに必ず再計算する」という設計上の対称性を
+        # 保つため、成否に関わらず呼ぶ(C#版UpdateButtonStates()もここで
+        # 無条件に呼ばれる、L.2073)。
+        self._update_button_states()
         if ok:
             self.widgets["statusLabel"].config(text=i18n.S("StatusPromptVrm"))
             self.widgets["blenderRetryButton"].place_forget()

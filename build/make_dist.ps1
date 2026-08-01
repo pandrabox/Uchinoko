@@ -1,7 +1,11 @@
 # BOOTH配布用フルセットzipを作る
 # 使い方: pwsh -File make_dist.ps1 [-Version v0.1.0] [-Suffix _NEWLAYOUT]
-# 出力: dist\Uchinoko_for_Palworld_<Version>_full<Suffix>.zip
-# (v2.0.0改名: ユーザー可視面のみ Uchinoko for Palworld。ソース・内部名はDiveToPalworldのまま)
+# 出力: dist\Uchinoko_<Version>_full<Suffix>.zip
+# (v2.0.0改名: ユーザー可視面のみ Uchinoko for Palworld。ソース・内部名はDiveToPalworldのまま。
+#  dev#625(2026-08-01オーナー裁定): 出力zipのファイル名を次リリースから
+#  Uchinoko_for_Palworld_<Version>_full<Suffix>.zip から
+#  Uchinoko_<Version>_full<Suffix>.zip へ短縮。zip内部のステージングフォルダ名
+#  $Stage(Uchinoko_for_Palworld)はこの変更の対象外、従来どおり)
 #
 # 2026-08-01(dev#532 D1、方針A統合): C#/WinForms(app\DiveToPalworld.cs +
 # app\build_app.ps1、csc.exeビルド)からPython/tkinter版(app_py\、
@@ -42,7 +46,7 @@ param([string]$Version = "v1.0.0", [string]$Suffix = "", [ValidateSet("booth", "
 $ErrorActionPreference = "Stop"
 $Root = Split-Path $PSScriptRoot -Parent
 $Stage = Join-Path $Root "dist\stage\Uchinoko_for_Palworld"
-$OutZip = Join-Path $Root "dist\Uchinoko_for_Palworld_${Version}_full${Suffix}.zip"
+$OutZip = Join-Path $Root "dist\Uchinoko_${Version}_full${Suffix}.zip"
 
 # dev#532 D1: バージョン整合チェック(FRESH_QAレビュー3-9恒久対策、旧U28)。
 # app_py\ui\main_window.py の TOOL_VERSION と本スクリプトの $Version が
@@ -58,7 +62,7 @@ $PyVersion = $VersionMatch.Groups[1].Value
 # (既定値のままの)場合に限りTOOL_VERSIONへ自動追随する。
 if ($StageOnly -and $Version -eq "v1.0.0") {
     $Version = $PyVersion
-    $OutZip = Join-Path $Root "dist\Uchinoko_for_Palworld_${Version}_full${Suffix}.zip"
+    $OutZip = Join-Path $Root "dist\Uchinoko_${Version}_full${Suffix}.zip"
 }
 if ($PyVersion -ne $Version) {
     Write-Error "バージョン不一致: app_py\ui\main_window.py の TOOL_VERSION='$PyVersion' に対し make_dist.ps1 の `$Version='$Version'。一致させてから再実行してください(-Version引数 または TOOL_VERSION定数を修正)"

@@ -67,13 +67,36 @@ class RaisingUser32:
 # =====================================================================
 
 def test_show_notice_calls_message_box_with_title_and_message(monkeypatch):
+    """2026-08-01 CI赤で判明: show_notice()が起動する自動クローズ用の
+    バックグラウンドスレッド(auto_close_after_timeout)を待たずにテストが
+    終わると、monkeypatchのteardown後(=mod.user32が別の値に戻された後、
+    あるいは後続テストが別のFakeUser32へ差し替えた後)にそのスレッドが
+    実行され、user32(モジュールグローバル、呼び出し時点の値を都度参照)への
+    呼び出しが後続テスト(同じ"タイトル"を使うtest_auto_close_after_timeout_*)
+    のfakeへ紛れ込む競合が起きうる(実測: GitHub ActionsのCIで
+    find_window_callsに'タイトル'が2件記録される形で顕在化)。
+    test_show_notice_starts_auto_close_timer_thread と同じ手当て(Threadを
+    RecordingThreadで差し替えてjoinする)をこちらにも入れ、このテストが
+    戻る前にスレッドを完了させることで競合を断つ。"""
     mod = _import_module()
     fake = FakeUser32()
     monkeypatch.setattr(mod, "user32", fake)
 
+    started_threads = []
+    real_thread_cls = threading.Thread
+
+    class RecordingThread(real_thread_cls):
+        def start(self):
+            started_threads.append(self)
+            super().start()
+
+    monkeypatch.setattr(threading, "Thread", RecordingThread)
+
     mod.show_notice("タイトル", "本文テキスト", timeout_ms=1)
 
     assert fake.message_box_calls == [("本文テキスト", "タイトル", mod.MB_OK)]
+    assert len(started_threads) == 1
+    started_threads[0].join(timeout=2)
 
 
 def test_show_notice_starts_auto_close_timer_thread(monkeypatch):

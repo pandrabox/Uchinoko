@@ -891,6 +891,42 @@ def unlock_cache_dir_for_write(cache_dir):
     _set_tree_readonly(cache_dir, False)
 
 
+def rmtree_robust(path, ignore_errors=False):
+    """Windows定番の「read-only解除つきrmtree」(dev#642)。
+
+    lock_cache_dir_readonly()で意図的にread-only施錠されたshared_cache/
+    live_template配下(silent corruptionをloud failureに変えるための正規の
+    施錠、参照: 本ファイルの_set_tree_readonly)を、丸ごとコピー/削除する側
+    (app_py\\build.py assemble_payload、devtools\\disk_guard.pyのrelease_cert
+    旧run削除・孤立worktree削除)が素のshutil.rmtreeで呼ぶとPermissionError
+    (WinError 5)で必ず落ちる。onexc/onerrorハンドラでos.chmod(S_IWRITE)して
+    1回だけ再試行してから削除する、共通ヘルパーへ一本化する。
+
+    read-only施錠自体はここでは解除しない(意図的な安全機構のため出所は
+    変えない) —— このヘルパーは「施錠済みツリーを丸ごと消す」操作にだけ効く。
+
+    ignore_errors=True の場合、chmod+再試行後もなお削除できなかった項目は
+    黙って無視する(shutil.rmtree(ignore_errors=True)と同じ契約)。"""
+    if not os.path.exists(path):
+        return
+
+    def _retry(func, target, exc_info):
+        try:
+            os.chmod(target, stat.S_IWRITE)
+        except OSError:
+            pass
+        try:
+            func(target)
+        except OSError:
+            if not ignore_errors:
+                raise
+
+    if sys.version_info >= (3, 12):
+        shutil.rmtree(path, onexc=_retry)
+    else:
+        shutil.rmtree(path, onerror=_retry)
+
+
 def cache_tmp_dir(final_dir):
     """final_dirと同じ親ディレクトリに一時ディレクトリを作る(同一ボリューム内
     なので、その後のrename(_replace_dir_atomic)がコピーでなく本当のrenameになる)。"""

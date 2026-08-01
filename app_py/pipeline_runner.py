@@ -569,6 +569,55 @@ def run_unity_export(
 
 
 # ---------------------------------------------------------------------------
+# busyBarのモード切替(dev#602: prefab変換で進捗マーカーが来ない長区間、busyBar
+# が静止して見える問題)。
+#
+# C#版の実挙動(自由設計しない。以下がすべて):
+#   - RunPipeline() L.2602-2603: busyBar.Style = Continuous; Value = 0
+#     (フル変換=convert_noue.pyが開始直後から##PROGRESS##を出し続ける工程。
+#     終始Continuousで、値はAppendLog() L.2849の`busyBar.Value = pct`のみで動く)
+#   - RunUnityExport() L.2677-2679: 「実進捗マーカーが無い工程(Unity起動〜
+#     インポート〜ベイク〜輸出)なのでマーキー表示にする」
+#     busyBar.Style = Marquee; MarqueeAnimationSpeed = 30
+#     (この工程は構造的に##PROGRESS##が一切来ない。C#はタイムアウト監視等は
+#     持たず、工程の頭からMarquee固定)
+#   - OnUnityExportDone() L.2686: busyBar.Style = Continuous
+#     (成否に関わらず無条件でContinuousへ戻す)
+#
+# つまり「マーカーが長時間途絶えたらMarqueeへ」という汎用タイマーはC#に
+# 存在しない。実際の切替単位は「工程(phase)」であり、フル変換は終始
+# determinate、Unity輸出は終始indeterminateである。
+# ---------------------------------------------------------------------------
+
+BUSY_BAR_MODE_DETERMINATE = "determinate"
+BUSY_BAR_MODE_INDETERMINATE = "indeterminate"
+
+PHASE_PIPELINE = "pipeline"
+PHASE_UNITY_EXPORT = "unity_export"
+
+
+def initial_busy_bar_mode(phase: str) -> str:
+    """RunPipeline() L.2602(Continuous)とRunUnityExport() L.2678(Marquee)の
+    分岐を純関数化したもの。phase=PHASE_UNITY_EXPORTのみindeterminate
+    (ttk Progressbarのmarquee相当)、それ以外(PHASE_PIPELINE、および未知の
+    phase文字列に対する安全側フォールバック)はdeterminate。"""
+    if phase == PHASE_UNITY_EXPORT:
+        return BUSY_BAR_MODE_INDETERMINATE
+    return BUSY_BAR_MODE_DETERMINATE
+
+
+def busy_bar_mode_on_marker() -> str:
+    """AppendLog()で##PROGRESS##行を受け取った時点のbusyBarモード。C#版は
+    busyBar.Value = pctを代入するだけだが、それが意味を持つのはStyleが
+    Continuousのときだけ(Marquee中はValueを見た目に反映しないWinForms仕様)。
+    py版のttk.Progressbarはindeterminate中に["value"]を設定しても表示に
+    反映されないため、マーカー到着時は明示的にdeterminateへ戻してから値を
+    入れる(構造的にはUnity輸出工程では発生しない防御的な扱いだが、
+    「マーカーが来た=実進捗が分かっている」を安全側で保証する)。"""
+    return BUSY_BAR_MODE_DETERMINATE
+
+
+# ---------------------------------------------------------------------------
 # 早期プレビュー反映(dev#288 WP-UXIMPL提案2、DiveToPalworld.cs L.2854-2870/
 # L.2957-2963相当。dev#532方針A WP-A11/dev#549で移植)。
 #

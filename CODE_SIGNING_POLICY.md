@@ -2,32 +2,45 @@
 
 *English section is below the Japanese one.*
 
-## 現状(2026-07-31 時点)
+## 現状(2026-08-01時点、v2.3.1)
 
-本プロジェクトは、[SignPath Foundation](https://signpath.org) が
-オープンソースプロジェクト向けに提供する無償コード署名証明書の利用を
-**申請する準備を進めています**(2026-07現在、申請の準備段階であり、
-**まだ申請していません**。証明書も付与されていません)。
-申請・承認が完了し次第、公開リリースの実行ファイル(GitHub Actions によるビルド成果物)は
-この証明書で署名される予定です。
+現行の配布物(`Uchinoko.bat` + `res\`)は、**自作でコンパイルした実行ファイル
+(exe/dll/pyd)を一切含みません**。したがって「自作バイナリに署名するかどうか」
+という問題自体が、この配布形態では構造的に発生しません。
 
-このドキュメントは、審査にあたって SignPath 側が確認する観点
-(誰が署名リクエストを承認できるか/このプログラムが外部へ何を送信するか)に
-あらかじめ答えるために用意しています。書式は、SignPath Foundation から
-既に署名を受けている他のオープンソースプロジェクト(後述)の公開文書を
-参考にしています。
+配布物に含まれる実行ファイルの内訳は次のとおりです。
 
-## 承認者・コミッター(Approvers / Committers)
+- `res\python_embed\`(`python.exe` / `pythonw.exe` / `python311.dll` /
+  `_tkinter.pyd` / `tcl86t.dll` / `tk86t.dll` 等): いずれも
+  [python.org](https://www.python.org/) が公式配布する embeddable Python
+  および Tcl/Tk ランタイムをそのまま(無改変で)同梱したものです。
+  Authenticode 署名は "CN=Python Software Foundation" のまま保持されています。
+  取得・展開の手順は `app_py\build.py`(`ensure_embeddable_zip` /
+  `ensure_tkinter_bundle`)を参照してください。
+- `res\assets\blender_patch\ooz.pyd`: 第三者ライブラリ pyooz(GPLv3+)の
+  バイナリで、署名はありません。Palworld の pak が採用する Oodle 互換圧縮
+  (ooz)の解凍にのみ使用し、初回起動時にダウンロードした Blender の Python
+  環境へ差し込まれます(このファイル自体は本ツールが自作したものではありません)。
+  詳細は [`THIRD_PARTY_NOTICES.md`](THIRD_PARTY_NOTICES.md) を参照してください。
 
-本プロジェクトは個人開発者 **pandrabox**([GitHub](https://github.com/pandrabox))が
-単独で開発・メンテナンスしています。
+エントリポイントの `Uchinoko.bat` はバッチファイル(非 PE)であり、
+署名の対象外です。
 
-| 役割 | 担当 |
-|---|---|
-| Committers(コミット権限) | [pandrabox](https://github.com/pandrabox) |
-| Approvers(署名リクエストの承認者) | [pandrabox](https://github.com/pandrabox) |
+## 検証方法
 
-複数人体制になった場合は、このドキュメントを更新します。
+`packaging\check_signatures.py` が、配布ペイロード内の全ての `*.exe` /
+`*.dll` / `*.pyd` を走査し、Windows の `Get-AuthenticodeSignature` で
+署名状態を機械的に分類します。このゲートは `app_py\build.py`
+(配布物を組み立てるビルドスクリプト)から毎回自動実行され、ビルドの
+合否(`SIGNATURE_GATE=PASS`/`FAIL`)に直結します。
+
+判定基準は「本ツール自身の過去のビルド出力と同名のファイル
+(既定: `Uchinoko.exe` / `DiveToPalworld.exe`。旧 C#/WinForms 時代の
+実行ファイル名)が、未署名のまま含まれていないか」の1点です。現行の
+配布物にはこれらの名前のファイルは存在しないため、このゲートは常に
+`PASS` します。第三者コンポーネント(前述の `ooz.pyd` 等)が未署名で
+あること自体はレポートに記録されますが、ゲートの合否には影響しません
+(既知の許容事項)。
 
 ## このプログラムが送信する情報について
 
@@ -38,84 +51,68 @@
    `https://dl.osakishokai.com/versions.json` への GET リクエストを1回送信し、
    最新版の有無だけを確認します。個人情報・アバターデータ・利用状況の類は
    一切含まれません。オフライン時や失敗時は無音で諦めます。
-   (実装: `app/DiveToPalworld.cs` `CheckForUpdateOnStartup()`、起動時に1回呼ばれる)
+   (実装: `app_py\update_check.py` `check_for_update()`、起動時に1回呼ばれる)
 2. **ユーザーが明示的に操作した場合のみ送信される診断ログ**:
    アプリ内の「問合せ」(Contact)ボタンを押し、送信される内容を画面上で
    確認・編集した上で、あらためて [OK] をクリックしたときにだけ送信されます。
    アバターファイルそのものは含まれません(診断ログのみ)。
-   (実装: `app/DiveToPalworld.cs` `ShowSupportDialog()` の第2段確認画面、
-   送信は `okBtn` のクリックハンドラ内でのみ実行される)
+   (実装: `app_py\inquiry.py` `build_report_payload_json()` /
+   `send_report_payload()`。送信は確認画面での明示操作からのみ呼ばれます)
 
 上記の2つ以外に、ユーザーの意図しない自動送信は行いません。
 より詳細な取り扱いは [`SECURITY.md`](SECURITY.md) の「このツールの設計上の前提」節、
 および [`PRIVACY.md`](PRIVACY.md) を参照してください。
 
-**進行中の移行についての注記(dev#532、2026-08-01時点)**: 本体GUI(`app\
-DiveToPalworld.cs`、csc.exe/WinForms)を `app_py\`(Python/tkinter)へ
-全面書き直しする作業が進行中です。移行完了まで、実際に出荷される実行ファイルの
-実装は上記のとおり `app\DiveToPalworld.cs` のままです。移行後は同じ2経路
-(起動時の更新確認・明示操作時の診断ログ送信)が、契約を変えずに
-`app_py\update_check.py`(`check_for_update`)および `app_py\inquiry.py`
-(`build_report_payload_json`/`send_report_payload`)へ実装が移る設計です。
-送信先URL・送信タイミング・ユーザー確認を要する点はいずれも変更しません。
+## 単独開発者による保守
 
-## `.signpath/` ポリシーファイルについて
-
-SignPath Foundation から署名を受けている一部のオープンソースプロジェクトは、
-Origin Verification(署名リクエストの出所検証)用の設定ファイルを
-`.signpath/policies/<project>/*.yml` の形でリポジトリに直接コミットしています。
-
-本プロジェクトでは、**このWPの時点ではこの種のファイルを設置しません。**
-理由: このファイルが実際に必要とする値(SignPath 側のプロジェクト名・組織設定)は
-SignPath への申請が承認され、プロジェクトが作成されるまで確定しません。
-確定していない値をそれらしく埋めたひな形を置くと、「動いているように見えて
-実際には機能しない設定」を本物として公開することになり、審査上も
-利用者に対しても不正確です。承認プロセスの中で SignPath 側に
-「このファイルは申請前に用意すべきものか、承認後の案内に従って追加するものか」を
-確認し、必要と判明した時点で追加します。
-
-## 参考にした前例(SignPath Foundation から既に署名を受けているプロジェクト)
-
-- [Cryengine Converter](https://github.com/Markemp/Cryengine-Converter) —
-  他社商用ゲームの独自バイナリ形式をポータブル3D形式へ変換するツール。
-  README 内の「Code Signing Policy」節(Approvers/Committers 表 + プライバシー文)を参考にした
-- [me3](https://github.com/garyttierney/me3) — 商用ゲーム向け MOD ローダー。
-  独立ファイル `CODE_SIGNING_POLICY.md`(本ファイルと同名)を参考にした
-- [KSP-CKAN](https://github.com/KSP-CKAN/CKAN) — MOD 管理ツール。
-  謝辞形式での SignPath 言及を確認した
-- [REasy Editor](https://github.com/seifhassine/REasy) — 他社商用ゲームの
-  独自バイナリ形式を解析・編集するツール。`.signpath/policies/` の実物を確認した
-  (上記「`.signpath/` ポリシーファイルについて」の判断根拠)
+本プロジェクトは個人開発者 **pandrabox**([GitHub](https://github.com/pandrabox))が
+単独で開発・メンテナンスしています。
 
 ---
 
 ## English
 
-### Current status (as of 2026-07-31)
+### Current status (as of 2026-08-01, v2.3.1)
 
-This project is **preparing to apply** for a free code-signing certificate from
-the [SignPath Foundation](https://signpath.org) for open source projects. As of
-2026-07, **the application has not been submitted yet**, and no certificate has
-been granted. Once the application is submitted and approved, public release
-binaries (built via GitHub Actions) are intended to be signed with that
-certificate.
+The current distributable (`Uchinoko.bat` + `res\`) contains **no
+self-compiled executable files (exe/dll/pyd)**. As a result, the question of
+"whether to sign our own binary" does not structurally arise for this
+distribution format.
 
-This document exists to proactively answer the questions SignPath's review is
-expected to ask (who can approve signing requests, what this program transmits
-externally), following the format used by other open source projects that
-already have SignPath Foundation signing (see below).
+The executable files included in the distribution break down as follows:
 
-### Approvers / Committers
+- `res\python_embed\` (`python.exe` / `pythonw.exe` / `python311.dll` /
+  `_tkinter.pyd` / `tcl86t.dll` / `tk86t.dll`, etc.): these are the official,
+  unmodified embeddable Python and Tcl/Tk runtime files distributed by
+  [python.org](https://www.python.org/). They retain their original
+  Authenticode signature ("CN=Python Software Foundation"). See
+  `app_py\build.py` (`ensure_embeddable_zip` / `ensure_tkinter_bundle`) for
+  how they are fetched and unpacked.
+- `res\assets\blender_patch\ooz.pyd`: a binary from the third-party library
+  pyooz (GPLv3+), unsigned. It is used solely to decompress the Oodle-
+  compatible compression (ooz) format used by Palworld's paks, and is
+  patched into the downloaded Blender's own Python environment on first
+  launch (this file is not something this project compiled itself). See
+  [`THIRD_PARTY_NOTICES.md`](THIRD_PARTY_NOTICES.md) for details.
 
-This project is developed and maintained solely by an individual developer,
-**pandrabox** ([GitHub](https://github.com/pandrabox)).
+The entry point `Uchinoko.bat` is a batch file (not a PE), so it is not a
+signing target.
 
-| Role | Members |
-|---|---|
-| Committers | [pandrabox](https://github.com/pandrabox) |
-| Approvers (for signing requests) | [pandrabox](https://github.com/pandrabox) |
+### How this is verified
 
-This document will be updated if the project grows beyond a single maintainer.
+`packaging\check_signatures.py` scans every `*.exe` / `*.dll` / `*.pyd` in
+the distribution payload and mechanically classifies each one's signature
+status via Windows' `Get-AuthenticodeSignature`. This gate runs automatically
+every time `app_py\build.py` (the script that assembles the distributable)
+runs, and its result (`SIGNATURE_GATE=PASS`/`FAIL`) directly gates the build.
+
+The pass/fail criterion is a single check: whether any file whose *name*
+matches this project's own historical build output (default:
+`Uchinoko.exe` / `DiveToPalworld.exe` — names from the retired C#/WinForms
+era) is present unsigned. No file with either of those names exists in the
+current distribution, so this gate always passes. Third-party components
+being unsigned (e.g. `ooz.pyd` above) is recorded in the report but does not
+by itself fail the gate (a known, accepted condition).
 
 ### What this program transmits
 
@@ -127,61 +124,24 @@ There are exactly two paths by which it sends information to the network:
    whether a newer version exists. It contains no personal information, avatar
    data, or usage telemetry. Failures (including being offline) are silently
    ignored.
-   (Implementation: `app/DiveToPalworld.cs`, `CheckForUpdateOnStartup()`,
-   invoked once at startup.)
+   (Implementation: `app_py\update_check.py`, `check_for_update()`, invoked
+   once at startup.)
 2. **A diagnostic log, sent only when the user explicitly requests it**: the
    in-app "Contact" button shows the exact content that would be sent, lets
    the user review and edit it, and only transmits it after the user clicks
    [OK] on that confirmation screen. It does not include the user's avatar
    file, only diagnostic log text.
-   (Implementation: `app/DiveToPalworld.cs`, `ShowSupportDialog()`'s
-   confirmation stage; the send call is only reached from the `okBtn` click
-   handler.)
+   (Implementation: `app_py\inquiry.py`, `build_report_payload_json()` /
+   `send_report_payload()`; the send call is only reached from that explicit
+   confirmation action.)
 
-Beyond these two paths, this program does not transmit information without the
-user's explicit action. See [`SECURITY.md`](SECURITY.md) ("Design assumptions
-of this tool") for more detail, and [`PRIVACY.md`](PRIVACY.md) (English version:
-[`PRIVACY.en.md`](PRIVACY.en.md)) for the full privacy policy.
+Beyond these two paths, this program does not transmit information without
+the user's explicit action. See [`SECURITY.md`](SECURITY.md) ("Design
+assumptions of this tool") for more detail, and [`PRIVACY.md`](PRIVACY.md)
+(English version: [`PRIVACY.en.md`](PRIVACY.en.md)) for the full privacy
+policy.
 
-**A note on the ongoing migration (dev#532, as of 2026-08-01)**: the main GUI
-(`app\DiveToPalworld.cs`, csc.exe/WinForms) is being rewritten from scratch in
-`app_py\` (Python/tkinter). Until that migration is complete, the code that
-actually ships is still `app\DiveToPalworld.cs` as described above. Once
-migration completes, the same two paths (the startup update check, and the
-diagnostic log sent only on explicit user action) are planned to move — with
-the same contract, unchanged — to `app_py\update_check.py`
-(`check_for_update`) and `app_py\inquiry.py`
-(`build_report_payload_json`/`send_report_payload`). The destination URL,
-timing, and the requirement for user confirmation before sending do not
-change.
+### Sole maintainer
 
-### On the `.signpath/` policy directory
-
-Some SignPath-signed open source projects commit an Origin Verification policy
-file at `.signpath/policies/<project>/*.yml`.
-
-**This WP intentionally does not add such a file yet.** The values it would
-need (the SignPath-side project/organization identifiers) are not known until
-after the application is approved and the SignPath project is created. Filling
-in a template with placeholder values would present a non-functional
-configuration as if it were real, which is inaccurate both for reviewers and
-for anyone reading the repository. We plan to ask SignPath, during the
-application process, whether this file should be pre-staged before approval or
-added afterward per their instructions, and add it once that is known.
-
-### Precedents consulted (projects already signed by SignPath Foundation)
-
-- [Cryengine Converter](https://github.com/Markemp/Cryengine-Converter) — a
-  tool that converts a third-party commercial game's proprietary binary
-  formats into portable 3D formats. Its README's "Code Signing Policy"
-  section (an Approvers/Committers table plus a privacy statement) was used
-  as a reference.
-- [me3](https://github.com/garyttierney/me3) — a mod loader for commercial
-  games. Its standalone `CODE_SIGNING_POLICY.md` (same filename as this file)
-  was used as a reference.
-- [KSP-CKAN](https://github.com/KSP-CKAN/CKAN) — a mod manager, referencing
-  SignPath in an acknowledgments-style mention.
-- [REasy Editor](https://github.com/seifhassine/REasy) — a tool that parses
-  and edits a third-party commercial game's proprietary binary formats. Its
-  `.signpath/policies/` directory was inspected directly (the basis for the
-  decision above).
+This project is developed and maintained solely by an individual developer,
+**pandrabox** ([GitHub](https://github.com/pandrabox)).

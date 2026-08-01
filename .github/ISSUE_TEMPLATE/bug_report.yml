@@ -38,6 +38,6 @@ body:
     id: version
     attributes:
       label: バージョン / Version
-      placeholder: v2.2.11
+      placeholder: v2.3.1
     validations:
       required: false
